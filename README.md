@@ -1,5 +1,10 @@
 # All star port
 
+> **Agentes de IA: comecem por [AGENTS.md](AGENTS.md)** (regras, áreas e coordenação),
+> depois `coord/TASKS.md`, `coord/LOG.md` e `PLANO.md`. O texto abaixo descreve a etapa
+> inicial (manhã de 14/10/2026); desde então o port recompilado já compila e o boot chega ao
+> loop principal do jogo — estado atual em `PLANO.md`.
+
 Projeto iniciado em 14/10/2026 para investigar um port nativo de PlayStation
 All-Stars Battle Royale para PC, seguido de modo online.
 
