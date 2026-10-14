@@ -32,6 +32,15 @@ Port nativo para PC (Windows x64) de **PlayStation All-Stars Battle Royale**
 6. Travas sem renovação há mais de 24 h podem ser liberadas **pelo usuário** (`--force`).
 7. Achou algo fora da sua tarefa? Não conserte por conta própria: crie uma tarefa nova
    em `coord/TASKS.md` (status `livre`) e registre no LOG.
+8. **Trabalho pesado entra na fila de 2 vagas** (pedido do Samuel, para o PC não pesar):
+   build, lift/relift, rodar o jogo, Ghidra headless e testes longos. Ler/editar código não entra.
+   Forma simples (pega a vaga, roda, devolve mesmo se falhar):
+   `.\.venv\Scripts\python.exe scripts\heavy_slot.py run <seu-nome> --what "build" -- scripts\build.bat Release <seu-nome>`
+   `.\.venv\Scripts\python.exe scripts\heavy_slot.py run <seu-nome> --what "jogo 200s" -- powershell -ExecutionPolicy Bypass -File scripts\run.ps1 -Agent <seu-nome> -Seconds 200 -Tag <seu-nome>-x`
+   Ver quem está usando e quem espera: `heavy_slot.py status`. Para trabalho longo fora do `run`:
+   `heavy_slot.py acquire <nome> --what "..." --ttl-min 120`, `renew <nome>`, `release <nome>`.
+   A fila é por ordem de chegada; vaga de processo morto ou sem renovação expira sozinha.
+   Rodar o jogo continua exigindo também a trava `GPU` (só uma janela do jogo por vez).
 
 ## 4. Áreas de trabalho (quem escreve onde)
 | Caminho | Uso | Quem escreve |
