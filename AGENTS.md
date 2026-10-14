@@ -91,6 +91,11 @@ imagem SPU do descompressor em `0xB9F980`; ver `PLANO.md` para todos os endereç
 
 ## 7. Regras de evidência (herdadas do ROADMAP)
 - Separe 1.00 e 1.12; nunca transfira endereços entre versões sem validar bytes.
+- **Código novo não fixa endereço do 1.00** (para a migração futura ao 1.12 ser barata): identifique
+  funções/dados do jogo por **assinatura de código** (sequência de instruções com máscara de operandos) ou
+  pelo fingerprint da imagem SPU, como `spu_workload` já faz. Onde um endereço for inevitável, ponha-o numa
+  **tabela de endereços por versão** (chave = SHA-256 do ELF), nunca solto no código. O integrador cobra isso
+  antes de cada merge em `allstars-port`.
 - Pseudocódigo do Ghidra é inferência, não código original. Diga o que foi observado,
   o que foi inferido e o que é desconhecido. Resultado negativo também vai para o LOG.
 - Registre comando + resultado de cada teste que justificar uma conclusão.
