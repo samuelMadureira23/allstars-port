@@ -86,6 +86,23 @@
       `global/shaders/bootup/titlescreen.psarc`.
 - [ ] **Próximos:** (1) PPU chama `0x40304` que não está na tabela de funções → adicionar como função extra e re-lift;
       (2) job Edge Geometry dá `HALT-ASSERT heqi pc=0x8DF8`; (3) cellSail (vídeo de abertura) só stub.
+- [x] (09:00–12:00) T-001/T-002 resolvidas; FIFO `GCM_PARK_WAIT`; vídeo `SAIL_SKIP_MOVIES`; **NV4097_INLINE_ARRAY**;
+      **SPURS `JC_RESUME`** → **TELA DE TÍTULO** ("PRESS START") e, com START, **MENU PRINCIPAL** + diálogo do tutorial
+      (screenshots em `docs/marcos/`, fora do git). Integrado em `src/` (build\ chega ao título).
+
+### Estado atual (2026-10-14 ~12:00)
+- Boot: legal → (vídeo pulado) → título → START → Main Menu com diálogo "Would you like to go to the Tutorial?".
+- **Bloqueio atual (T-011):** logo depois do menu o main espera um handle assíncrono chegar a 3 (`0x57544`);
+  quem conclui é a tarefa SPURS da imagem `spu_0001` (entry 0xB71480, criada no START com arg {owner,0,handle,..}).
+  A tarefa morre ao chamar métodos virtuais (vtables montadas em runtime) que o lifter não detectou
+  (0x248C8, 0x4CE8, 0x30E8, ...). `scripts/spu_discover.sh` roda o jogo em loop, coleta os alvos não-liftados e
+  re-lifta com `--extra-funcs` até zerar (lista em `work/spu/spu_0001_at_00B61480_extra.txt`).
+- Cuidado: o runtime tem heurísticas do LittleBigPlanet para `image_id == 2` (wws-jobentry/wws-jobret);
+  a nossa imagem 2 é a `spu_0001` por coincidência.
+- Defeitos visuais conhecidos: texto do menu avermelhado/escuro (formato de textura/blend? investigar com `RSX_CAP`).
+- Ferramentas de diagnóstico do port (main.cpp): `PORT_GSTACK`, `PORT_PEEK`, `PORT_FIFODUMP`, `PORT_WATCH`,
+  `PORT_DRWATCH` (breakpoints de hardware), `PORT_HANGPROBE=<lr>`; runtime: `RSX_CAP`, `TCONST_FIFO`, `GCM_RECDBG`,
+  `JC_TRACE`, `SPU_TASKARG`, `GCM_FLIPCOUNT`, `PAD_SCRIPT`/`PAD_FILE`.
 - Diagnóstico: crash handler no main.cpp (`[CRASH]` + pilhas guest), `scripts/sym.py <rva>` (usa build/MyGameRecomp.map),
   `scripts/disasm.py` (capstone PPU).
 - Ferramentas próprias: `scripts/xref_str.py` (xrefs via TOC, que o Ghidra não resolve), `scripts/decompile.py` (decompila por endereço)

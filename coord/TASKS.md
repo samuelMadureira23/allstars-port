@@ -13,6 +13,7 @@ Novas tarefas: próximo ID livre, no fim da tabela da área.
 | T-003 | `cellSail` (vídeos). Hoje: `SAIL_SKIP_MOVIES=1` encerra o vídeo no Start (o jogo segue). Falta: decodificar PAMF/AVC de verdade (GetFrame2) e áudio dos vídeos. | livre (contornada) | — | `agents/<a>/ps3recomp/libs/codec/cellSail.c` |
 | T-011 | Passar da tela de título: apertar START (PAD_SCRIPT/PAD_FILE) e chegar aos menus; corrigir o que travar. | em andamento | claude | `agents/claude/*` |
 | T-012 | Controle real: mapear XInput/teclado no `cellPad` do port (hoje só input scriptado). | livre | — | `agents/<a>/ps3recomp/libs/input/cellPad.c` |
+| T-013 | Cores erradas no menu (texto avermelhado/escuro). Pista: cada draw usa um fragment program em endereço próprio (constantes de cor embutidas no microcódigo FP); verificar cache/patch de constantes FP no backend D3D12 (`libs/video/rsx_d3d12_backend.c`). Capturas: `RSX_CAP`. | livre | — | `agents/<a>/ps3recomp/libs/video/` |
 | T-008 | Suporte ao EBOOT 1.12 (update + DLCs): relift, novos endereços (imagem SPU, LFQueue), validar decriptação psarc. | bloqueada (depois do 1.00 chegar ao título) | — | — |
 
 ## Área B — Recursos / assets (sugerido: astra)

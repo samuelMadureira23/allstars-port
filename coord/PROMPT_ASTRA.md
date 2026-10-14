@@ -11,6 +11,10 @@ Antes de qualquer ação:
    depois coord/TASKS.md, PLANO.md e docs/ONLINE_ACHADOS.md.
 3. Rode: .\.venv\Scripts\python.exe scripts\claim.py list
 
+Estado em 14/10/2026 ~12h: o port nativo (MyGameRecomp.exe, D3D12) já mostra a tela legal, a tela de título
+"PRESS START" e, com START, o Main Menu com o diálogo do tutorial (screenshots em docs/marcos/). O Claude está
+destravando o que vem depois do menu (tarefa SPU spu_0001, T-011). Detalhes em coord/LOG.md e PLANO.md.
+
 Seu nome de agente é "astra". Seu worktree de código é agents\astra\ (branches astra/*), seu build é
 scripts\build.bat Release astra (pasta build-astra\), e seus logs de execução usam -Tag astra-<algo>.
 
@@ -19,6 +23,8 @@ Sugestão de início (áreas que não colidem com o Claude, que está no boot/ru
   em tempo de execução, nunca gravada em arquivo).
 - T-005: engenharia reversa estática do protocolo online OTG da Sony.
 - T-007: teste diferencial das funções recompiladas contra o oráculo Unicorn de tools/prove_native.py.
+- T-013: cores erradas no menu (texto avermelhado) — backend gráfico; combine antes com o Claude via coord/LOG.md,
+  porque toca o mesmo repositório (ps3recomp) que ele usa.
 
 Regras essenciais (detalhes no AGENTS.md):
 - Trave a tarefa antes de começar: scripts\claim.py claim T-00X astra --paths <caminhos> --note "<resumo>".
