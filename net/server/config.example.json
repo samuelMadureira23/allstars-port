@@ -1,0 +1,46 @@
+{
+  "_comentario": "Copie para config.json. Todas as chaves sao opcionais. public_ip = IP pelo qual os jogadores alcancam este servidor (LAN ou publico); para jogar pela internet abra as portas da secao 4 de docs/net.md no roteador.",
+  "public_ip": "127.0.0.1",
+  "db_path": "allstars.db",
+  "npx": {
+    "port": 32000,
+    "udp_port": 32000,
+    "allow_create": true,
+    "everyone_is_friend": true
+  },
+  "turn": {
+    "port": 3478,
+    "relay_port_min": 49160,
+    "relay_port_max": 49400,
+    "realm": "allstars",
+    "auth": "any"
+  },
+  "http": {
+    "port": 10012,
+    "routes": [
+      {
+        "prefix": "/ipmapping-rest/otgc/IPMapping/battleroyale/location",
+        "status": 200,
+        "content_type": "application/json",
+        "body": "{\"country\":\"BR\",\"region\":\"SA\",\"continent\":\"SA\"}"
+      }
+    ]
+  },
+  "otg": {
+    "tcp_ports": [],
+    "udp_ports": [],
+    "capture_dir": "captures"
+  },
+  "vlan": {
+    "udp_port": 32001,
+    "subnet": "10.77.0.0/16",
+    "max_members": 8
+  },
+  "dns": {
+    "port": 53,
+    "blocked": [
+      "*.telemetry.*"
+    ],
+    "upstream": ""
+  }
+}

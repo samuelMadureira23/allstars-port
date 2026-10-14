@@ -25,3 +25,9 @@ build-*/
 coord/locks/
 # screenshots/capturas do jogo (saída do jogo, não versionar)
 docs/marcos/
+
+# servidor substituto (net/server)
+net/server/allstars.db*
+net/server/captures/
+net/server/config.json
+__pycache__/
