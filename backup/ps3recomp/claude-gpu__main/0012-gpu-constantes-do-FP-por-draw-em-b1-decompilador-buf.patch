@@ -1,0 +1,237 @@
+From 79e0b36cc8a88792e3740c98fc4a529bc82bee26 Mon Sep 17 00:00:00 2001
+From: samuel <samuel.madureira23@gmail.com>
+Date: Wed, 14 Oct 2026 14:33:41 -0300
+Subject: [PATCH 12/14] gpu: constantes do FP por draw em b1 (decompilador
+ buffered); cores do menu (T-013)
+
+O cache de PSO e chaveado pelo hash do CODIGO do fragment program, mas o
+shader era compilado com as constantes inline como literais: todo draw com o
+mesmo codigo herdava as constantes da primeira copia compilada (texto do menu
+avermelhado/escuro). Agora o shader le fp_constants[] de b1, preenchido no
+momento da gravacao do draw a partir da propria copia do ucode.
+extract_consts/code_hash passam a contar constantes como o decompilador
+(inclusive em palavras de branch). [FPRING] mede programas alterados entre
+gravacao e replay. FP_CONSTBUF=0 volta ao modo literal.
+
+Co-Authored-By: Claude Opus 5.5 (1M context) <noreply@anthropic.com>
+---
+ libs/video/rsx_d3d12_backend.c | 113 +++++++++++++++++++++------------
+ libs/video/rsx_fp_decompiler.c |  17 ++---
+ 2 files changed, 77 insertions(+), 53 deletions(-)
+
+diff --git a/libs/video/rsx_d3d12_backend.c b/libs/video/rsx_d3d12_backend.c
+index 134f9c7..039cddf 100644
+--- a/libs/video/rsx_d3d12_backend.c
++++ b/libs/video/rsx_d3d12_backend.c
+@@ -75,9 +75,12 @@ static u32 s_rs = 1;
+  * own texScale/offset uniforms, so one per-frame snapshot ran every pass
+  * with the LAST pass's constants. */
+ #define VP_CB_STRIDE      8448
+-/* b1 per-draw FP slot: rsx_texscale[4] + rsx_alphatest + fp_k[64]
+- * = 69 float4 = 1104 B, rounded to D3D12's 256-byte CBV alignment. */
+-#define VP_FPCB_STRIDE    1280
++/* b1 per-draw FP slot, the decompiler's buffered PSConstants layout:
++ * fp_constants[n] then fp_alpha, n <= FPCB_MAX_K. 256 float4 = 4096 B (a
++ * multiple of D3D12's 256-byte CBV alignment). A program with more inline
++ * constants than that compiles them as literals instead (see vp_get_fp_pso). */
++#define VP_FPCB_STRIDE    4096
++#define FPCB_MAX_K        255
+ #define VERTEX_STRIDE       36  /* bytes per host vertex: pos3 + col4 + uv2 */
+ 
+ typedef struct {
+@@ -2042,6 +2045,18 @@ static u32 dr_cube_mask(const D3D12DrawRecord* dr)
+     return m;
+ }
+ 
++/* Whether a program's inline constants go through b1 (fp_constants[], per
++ * draw) rather than being baked in as literals. FP_CONSTBUF=0 forces literals
++ * (and a pipeline key over the full ucode bytes) for A/B checks. */
++static int fp_use_constbuf(const u8* ucode)
++{
++    static int env = -1;
++    if (env < 0) { const char* e = getenv("FP_CONSTBUF"); env = !(e && e[0] == '0'); }
++    if (!env) return 0;
++    static float kb[(FPCB_MAX_K + 1) * 4];
++    return rsx_fp_extract_consts(ucode, 4096, kb, FPCB_MAX_K + 1) <= FPCB_MAX_K;
++}
++
+ static ID3D12PipelineState* vp_get_fp_pso(int vs_idx, u32 fp_addr, u32 blend, int nrt,
+                                           DXGI_FORMAT rtfmt, int exp32, u32 cmask, u32 cull,
+                                           u32 cube_mask)
+@@ -2076,7 +2091,7 @@ static ID3D12PipelineState* vp_get_fp_pso(int vs_idx, u32 fp_addr, u32 blend, in
+         u32 usz = rsx_fp_program_size(vm_base + off, 4096);
+         if (usz == 0) usz = 64;
+         s_perf_pso_hashbytes += (int)usz;
+-        if (getenv("FP_CONSTBUF") && getenv("FP_CONSTBUF")[0] == '0') {
++        if (!fp_use_constbuf(vm_base + off)) {
+             uhash = 2166136261u;
+             const u8* up = vm_base + off;
+             for (u32 i = 0; i < usz; i++) { uhash ^= up[i]; uhash *= 16777619u; }
+@@ -2153,7 +2168,16 @@ static ID3D12PipelineState* vp_get_fp_pso(int vs_idx, u32 fp_addr, u32 blend, in
+      * parameter is now SET_SHADER_CONTROL, not an exports-32 flag. This
+      * backend does not track that register, so let the decompiler infer it. */
+     (void)exp32;
+-    int n = rsx_fp_decompile(vm_base + off, 4096, RSX_FP_CTRL_AUTO, hlsl, sizeof(hlsl));
++    /* Buffered: inline constants become fp_constants[i] in b1, filled per draw
++     * by vp_record_cb from that draw's own ucode copy. The pipeline is keyed on
++     * the CODE hash, so a literal-constant shader would hand the first copy's
++     * constants (a menu label's colour, say) to every later draw of that code. */
++    u32 nconst = 0;
++    int n = fp_use_constbuf(vm_base + off)
++        ? rsx_fp_decompile_buffered_ex(vm_base + off, 4096, RSX_FP_CTRL_AUTO, 0u,
++                                       hlsl, sizeof(hlsl), &nconst)
++        : rsx_fp_decompile(vm_base + off, 4096, RSX_FP_CTRL_AUTO, hlsl, sizeof(hlsl));
++    (void)nconst;
+     if (n <= 0) { static int _e=0; if(_e++<16) printf("[FP] decompile fail (fp=0x%08X)\n", fp_addr); return NULL; }
+     /* FP_LIST=1: every program the title actually compiles, with its size. A
+      * fragment program that hangs the GPU shows up here as an implausible
+@@ -3135,53 +3159,41 @@ static int vp_upload_tex_slot(u32 off, u32 w, u32 h, u32 fmt, int cube, u32 mips
+ /* Snapshot the VP constant bank + viewport epilogue for one draw into its
+  * vp_cb slot. Runs at record time so every draw keeps the constants that
+  * were live when the guest issued it. */
++/* Code hash of each draw's fragment program as it stood at RECORD time,
++ * indexed like the b1 slots. The pipeline is built later, at replay, from
++ * whatever sits at fp_addr then; [FPRING] counts draws whose program bytes
++ * changed in between (the title's ring of program copies wrapping). */
++static u32 s_fp_rec_hash[2][MAX_DRAWS];
++static u32 s_fpring_mismatch, s_fpring_checked;
++
+ static void vp_record_cb(u32 slot, int vs_idx, const D3D12DrawRecord* dr)
+ {
+     const rsx_state* st = s_d3d.current_rsx_state;
+     if (!s_d3d.vp_cb_mapped || !st || slot >= MAX_DRAWS) return;
+-    /* FP texcoord scale (b1): 1/size for UNnormalized textures (fmt bit
+-     * 0x40 -- wave samples everything in texel space), 1.0 otherwise. */
++    /* b1 = the decompiler's PSConstants: fp_constants[n] (this draw's inline
++     * constants, read from its own ucode copy at RECORD time -- the title
++     * re-patches them into a ring of program copies, so reading at replay
++     * would see a later draw's values) followed by fp_alpha. The old
++     * rsx_texscale/rsx_alphatest slots are no longer read by any shader the
++     * current decompiler emits. */
+     if (s_d3d.vp_fpcb_mapped) {
+         float* ts = (float*)((char*)s_d3d.vp_fpcb_mapped
+             + ((u64)s_d3d.vp_parity * MAX_DRAWS + slot) * VP_FPCB_STRIDE);
+-        for (int _u = 0; _u < 4; _u++) {
+-            float sx = 1.0f, sy = 1.0f;
+-            if (dr && dr->tex[_u].set && (dr->tex[_u].fmt & 0x40) &&
+-                dr->tex[_u].w && dr->tex[_u].h) {
+-                sx = 1.0f / (float)dr->tex[_u].w;
+-                sy = 1.0f / (float)dr->tex[_u].h;
+-            }
+-            ts[_u*4+0] = sx; ts[_u*4+1] = sy; ts[_u*4+2] = 0.0f; ts[_u*4+3] = 0.0f;
+-        }
+-        /* rsx_alphatest (b1[4]): x=enable, y=ref/255, z=func-0x200. D3D12
+-         * has no fixed alpha test; guest FPs discard on it dynamically
+-         * (wave's colour wheel is a disc via alpha test -- without it the
+-         * palette drew as an opaque square). */
+-        if (dr && !getenv("NO_ALPHATEST")) {
+-            { static int _at = 0;
+-              if (((dr->alpha_ctl >> 16) & 1u) && _at++ < 4)
+-                  printf("[ALPHATEST] enable func=%u ref=%u\n",
+-                         (dr->alpha_ctl >> 8) & 0xFFu, dr->alpha_ctl & 0xFFu); }
+-            ts[16] = (float)((dr->alpha_ctl >> 16) & 1u);
+-            ts[17] = (float)(dr->alpha_ctl & 0xFFu) / 255.0f;
+-            ts[18] = (float)((dr->alpha_ctl >> 8) & 0x07u);
+-            ts[19] = 0.0f;
+-        } else {
+-            ts[16] = 0.0f; ts[17] = 0.0f; ts[18] = 7.0f; ts[19] = 0.0f;
+-        }
+-
+-        /* fp_k[]: the program's inline fragment constants, re-read from the
+-         * guest ucode every draw. The decompiler emits fp_k[i] lookups instead
+-         * of baking these in as literals, so the compiled shader no longer
+-         * changes when the title re-patches them -- which is what forced the
+-         * pipeline cache to key on a hash of the ucode bytes. */
++        int nk = 0;
+         if (dr && dr->fp_addr) {
+             extern uint8_t* vm_base;
+             extern u32 cellGcmResolveLocated(int, u32);
+             u32 foff = cellGcmResolveLocated((dr->fp_addr & 0x3u) == 1,
+                                              dr->fp_addr & ~0x3u);
+-            if (vm_base && foff != 0xFFFFFFFFu)
+-                rsx_fp_extract_consts(vm_base + foff, 4096, &ts[20], 64);   /* fp_k[64] */
++            if (vm_base && foff != 0xFFFFFFFFu) {
++                nk = rsx_fp_extract_consts(vm_base + foff, 4096, ts, FPCB_MAX_K);
++                s_fp_rec_hash[s_d3d.vp_parity][slot] = rsx_fp_code_hash(vm_base + foff, 4096);
++            }
++        }
++        { float* fa = &ts[(nk ? nk : 1) * 4];   /* fp_alpha: x = alpha ref */
++          fa[0] = dr ? (float)(dr->alpha_ctl & 0xFFu) / 255.0f : 0.0f;
++          fa[1] = fa[2] = fa[3] = 0.0f; }
++        if (dr && dr->fp_addr) {
+             /* FPK_DBG=1: the fragment constants as the shader will see them.
+              * A program whose only output is fp_k[0].xxxx renders black if
+              * those constants never arrive, which looks identical from the
+@@ -3192,8 +3204,8 @@ static void vp_record_cb(u32 slot, int vs_idx, const D3D12DrawRecord* dr)
+                   fprintf(stderr, "[FPK] tex0=0x%08X fp=0x%08X k0=(%g %g %g %g)"
+                                   " k1=(%g %g %g %g)%c",
+                           dr->tex[0].raw, dr->fp_addr,
+-                          ts[20], ts[21], ts[22], ts[23],
+-                          ts[24], ts[25], ts[26], ts[27], 10);
++                          ts[0], ts[1], ts[2], ts[3],
++                          ts[4], ts[5], ts[6], ts[7], 10);
+                   const u32 raw = dr->fp_addr & ~0x3u;
+                   const u32 ea_main  = cellGcmResolveLocated(0, raw);
+                   const u32 ea_local = cellGcmResolveLocated(1, raw);
+@@ -4318,6 +4330,23 @@ static void render_frame(void)
+         }
+         if (perf_on()) s_perf_srv += perf_now() - _sv0;
+         double _ps0 = perf_on() ? perf_now() : 0.0;
++        if (dr->fp_addr && dr->cb_slot < MAX_DRAWS) {
++            extern uint8_t* vm_base;
++            extern u32 cellGcmResolveLocated(int, u32);
++            u32 foff = cellGcmResolveLocated((dr->fp_addr & 0x3u) == 1, dr->fp_addr & ~0x3u);
++            if (vm_base && foff != 0xFFFFFFFFu) {
++                s_fpring_checked++;
++                if (rsx_fp_code_hash(vm_base + foff, 4096) !=
++                    s_fp_rec_hash[s_d3d.vp_parity][dr->cb_slot]) {
++                    if (s_fpring_mismatch++ < 8)
++                        fprintf(stderr, "[FPRING] fp=0x%08X changed between record and replay%c",
++                                dr->fp_addr, 10);
++                }
++                if ((s_fpring_checked % 20000u) == 0)
++                    fprintf(stderr, "[FPRING] %u mismatches in %u draws%c",
++                            s_fpring_mismatch, s_fpring_checked, 10);
++            }
++        }
+         if (dr->fp_addr) vp_get_fp_pso(dr->vs_idx, dr->fp_addr, dr->blend_key,
+                                        dr_num_rts(dr),
+                                        dr->rt_off ? rsx_surface_dxgi(dr->rt_fmt)
+diff --git a/libs/video/rsx_fp_decompiler.c b/libs/video/rsx_fp_decompiler.c
+index 94ca4de..563a5b4 100644
+--- a/libs/video/rsx_fp_decompiler.c
++++ b/libs/video/rsx_fp_decompiler.c
+@@ -1046,11 +1046,10 @@ int rsx_fp_extract_consts(const u8* ucode, u32 max_bytes, float* out, int max_ou
+         u32 w2 = rsx_fp_read_word(ucode + off + 8);
+         u32 w3 = rsx_fp_read_word(ucode + off + 12);
+         off += 16;
+-        int is_branch = (w2 & FP_BRANCH) != 0;
+-        int has_k = !is_branch &&
+-            ((((w1 & FP_REG_TYPE_MASK) >> FP_REG_TYPE_SHIFT) == FP_REG_TYPE_CONST) ||
+-             (((w2 & FP_REG_TYPE_MASK) >> FP_REG_TYPE_SHIFT) == FP_REG_TYPE_CONST) ||
+-             (((w3 & FP_REG_TYPE_MASK) >> FP_REG_TYPE_SHIFT) == FP_REG_TYPE_CONST));
++        /* Same rule as the decompiler and rsx_fp_collect_constants: a branch
++         * word with a CONST-typed field still owns the next slot, so skipping
++         * branches here shifted every later fp_constants[] index. */
++        int has_k = fp_instruction_has_constant(w1, w2, w3);
+         if (has_k) {
+             if (off + 16 <= max_bytes) {
+                 for (int i = 0; i < 4; i++) {
+@@ -1092,12 +1091,8 @@ u32 rsx_fp_code_hash(const u8* ucode, u32 max_bytes)
+         u32 w3 = rsx_fp_read_word(ucode + off + 12);
+         for (u32 i = 0; i < 16; i++) { h ^= ucode[off + i]; h *= 16777619u; }
+         off += 16;
+-        int is_branch = (w2 & FP_BRANCH) != 0;
+-        int has_k = !is_branch &&
+-            ((((w1 & FP_REG_TYPE_MASK) >> FP_REG_TYPE_SHIFT) == FP_REG_TYPE_CONST) ||
+-             (((w2 & FP_REG_TYPE_MASK) >> FP_REG_TYPE_SHIFT) == FP_REG_TYPE_CONST) ||
+-             (((w3 & FP_REG_TYPE_MASK) >> FP_REG_TYPE_SHIFT) == FP_REG_TYPE_CONST));
+-        if (has_k) off += 16;            /* skip the constant, do not hash it */
++        int has_k = fp_instruction_has_constant(w1, w2, w3);   /* as the decompiler */
++        if (has_k) off += 16;           /* skip the constant, do not hash it */
+         if (w0 & FP_END) break;
+     }
+     return h;
+-- 
+2.55.0.windows.3
+

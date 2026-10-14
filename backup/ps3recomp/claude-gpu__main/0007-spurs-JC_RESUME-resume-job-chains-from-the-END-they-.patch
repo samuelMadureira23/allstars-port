@@ -1,0 +1,130 @@
+From dc0d9d2e0c53bb75410c6fcb9e9d108af458b5a3 Mon Sep 17 00:00:00 2001
+From: samuel <samuel.madureira23@gmail.com>
+Date: Wed, 14 Oct 2026 10:21:09 -0300
+Subject: [PATCH 07/14] spurs: JC_RESUME -- resume job chains from the END they
+ stopped on
+
+A job chain is a persistent command stream. PSASBR grows its chain (entry ->
+NEXT block0 -> jobs -> NEXT block1 ... END), patching the old END into a NEXT
+before each Run. Restarting every Run from the entry re-ran all executed jobs,
+double-counting the per-block completion counters its render-packet pool
+checks for equality; no block was ever recycled and the renderer wedged after
+~1300 frames. JC_RESUME=1 keeps the stop position per chain and turns a Run
+that arrives mid-walk into another pass instead of dropping it. Also JC_TRACE.
+
+With this PSASBR reaches its title screen (PRESS START).
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ libs/spurs/cellSpurs.c | 59 ++++++++++++++++++++++++++++++++++++++++--
+ 1 file changed, 57 insertions(+), 2 deletions(-)
+
+diff --git a/libs/spurs/cellSpurs.c b/libs/spurs/cellSpurs.c
+index 8a1ad6d..baf6a8c 100644
+--- a/libs/spurs/cellSpurs.c
++++ b/libs/spurs/cellSpurs.c
+@@ -1989,8 +1989,26 @@ static struct {
+     u16 max_grab;
+     int run_count;
+     volatile long running;   /* 1 while a host thread walks this chain */
++    volatile long rerun;     /* JC_RESUME: a Run arrived while walking -- walk again */
++    u32 resume_pc;           /* JC_RESUME: the END this chain stopped on (0 = entry) */
+ } s_jobchains[MAX_JOBCHAINS];
+ 
++/* JC_RESUME=1: a job chain is a persistent command stream, not a script that
++ * restarts on every Run. A title that grows its chain incrementally (PSASBR:
++ * entry -> NEXT block0 -> jobs -> NEXT block1 ... END) appends work and turns
++ * the old END into a NEXT before calling Run again; restarting from the entry
++ * re-ran every job already executed, double-counting the per-block completion
++ * counters its packet pool waits on (equality test), so blocks were never
++ * recycled and the renderer wedged after ~1300 frames. With JC_RESUME the walk
++ * remembers the END it stopped on and continues from there, and a Run that
++ * arrives mid-walk triggers one more pass instead of being dropped. */
++static int jc_resume_enabled(void)
++{
++    static int v = -1;
++    if (v < 0) { const char* e = getenv("JC_RESUME"); v = e ? atoi(e) : 0; }
++    return v;
++}
++
+ static void jc_dump_commands(const char* tag, u32 ea, int max_words)
+ {
+     printf("[cellSpurs] %s chain@0x%08X commands:", tag, ea);
+@@ -2402,8 +2420,12 @@ static void jc_signal_done(u32 jc_ea)
+     }
+ }
+ 
++int g_jc_run_no = 0;
++static SPURS_JOB_TLS u32 s_jc_end_pc;   /* set by jc_execute when it stops on END */
+ static void jc_execute(u32 entry_ea, u32 jc_ea, u32 size_desc)
+ {
++    g_jc_run_no++;
++    s_jc_end_pc = 0;
+     u32 pc = entry_ea, ret_pc = 0;
+     int jobs = 0;
+     /* Bound IDLE steps, not total steps. A SPURS job chain is frequently a
+@@ -2433,12 +2455,23 @@ static void jc_execute(u32 entry_ea, u32 jc_ea, u32 size_desc)
+             pc += 8; continue;
+         }
+         if (op == 1) { pc = (u32)(cmd & ~7ull); continue; }   /* RESET_PC */
+-        if (op == 3) { pc = (u32)(cmd & ~7ull); continue; }   /* NEXT     */
++        if (op == 3) {                                         /* NEXT     */
++            /* JC_TRACE=<n>: on every n-th run, log each NEXT hop with the
++             * jobs run since the previous one -- shows whether a run re-walks
++             * segments it already executed on an earlier run. */
++            { static int tr = -1; if (tr < 0) { const char* e = getenv("JC_TRACE"); tr = e ? atoi(e) : 0; }
++              extern int g_jc_run_no;
++              if (tr > 0 && (g_jc_run_no % tr) == 0)
++                  printf("[jctrace] run %d: NEXT 0x%08X -> 0x%08X after %d job(s)%c",
++                         g_jc_run_no, pc, (u32)(cmd & ~7ull), jobs, 10); }
++            pc = (u32)(cmd & ~7ull); continue; }
+         if (op == 4) { ret_pc = pc + 8; pc = (u32)(cmd & ~7ull); continue; }  /* CALL */
+         if (op == 7) {
+             if (ext == (7 | (15 << 3))) {                     /* END */
+-                printf("[cellSpurs] chain 0x%08X: END after %d job(s)\n", jc_ea, jobs);
++                { static int ne = 0; if (ne++ < 40 || (ne % 500) == 0)
++                    printf("[cellSpurs] chain 0x%08X: END after %d job(s)\n", jc_ea, jobs); }
+                 if (jobs) jc_signal_done(jc_ea);
++                s_jc_end_pc = pc;            /* JC_RESUME: where this walk stopped */
+                 return;
+             }
+             if (ext == (7 | (14 << 3))) {                     /* RET */
+@@ -2474,6 +2507,26 @@ static DWORD WINAPI jc_thread(LPVOID p)
+      * Confirms timing-vs-never before committing to the async rewrite. */
+     { const char* d = getenv("SPURS_JC_DELAY");
+       if (d && *d) Sleep((unsigned)atoi(d)); }
++    if (jc_resume_enabled()) {
++        /* Walk from where the last pass stopped; keep walking while Runs
++         * arrived during the pass (their work may sit past the END we hit). */
++        for (;;) {
++            do {
++                s_jobchains[slot].rerun = 0;
++                u32 start = s_jobchains[slot].resume_pc ? s_jobchains[slot].resume_pc
++                                                        : s_jobchains[slot].entry_ea;
++                jc_execute(start, s_jobchains[slot].jc_ea, s_jobchains[slot].size_desc);
++                if (s_jc_end_pc) s_jobchains[slot].resume_pc = s_jc_end_pc;
++            } while (_InterlockedExchange(&s_jobchains[slot].rerun, 0));
++            s_jobchains[slot].running = 0;
++            /* A Run that landed between the last check and the store above saw
++             * running==1 and only raised `rerun`: pick it up here. */
++            if (!s_jobchains[slot].rerun ||
++                _InterlockedCompareExchange(&s_jobchains[slot].running, 1, 0) != 0) break;
++        }
++        jc_signal_done(s_jobchains[slot].jc_ea);
++        return 0;
++    } else
+     jc_execute(s_jobchains[slot].entry_ea, s_jobchains[slot].jc_ea,
+                s_jobchains[slot].size_desc);
+     s_jobchains[slot].running = 0;
+@@ -2515,6 +2568,8 @@ static s32 jc_start(u64 jc_ea, const char* who)
+             HANDLE th = CreateThread(NULL, 1u << 20, jc_thread, (LPVOID)(intptr_t)i, 0, NULL);
+             if (th) CloseHandle(th);
+             else s_jobchains[i].running = 0;
++        } else if (jc_resume_enabled()) {
++            _InterlockedExchange(&s_jobchains[i].rerun, 1);   /* walk once more */
+         }
+         return CELL_OK;
+     }
+-- 
+2.55.0.windows.3
+

@@ -1,0 +1,112 @@
+From 1f464141c960ca09aaf5e38e0eb8adf70d4d09ea Mon Sep 17 00:00:00 2001
+From: samuel <samuel.madureira23@gmail.com>
+Date: Wed, 14 Oct 2026 08:27:03 -0300
+Subject: [PATCH 02/14] diag: ppu_debug_dump_guest_stacks + publish main ctx
+ (g_ppu_main_ctx)
+
+Walks each live guest thread's PPC64 back-chain so a parked thread can be
+pinned to the exact game function without a debugger.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ runtime/ppu/ppu_loader.cpp        |  5 ++++
+ runtime/syscalls/sys_ppu_thread.c | 41 +++++++++++++++++++++++++++++++
+ runtime/syscalls/sys_ppu_thread.h |  3 +++
+ 3 files changed, 49 insertions(+)
+
+diff --git a/runtime/ppu/ppu_loader.cpp b/runtime/ppu/ppu_loader.cpp
+index 5c3e73f..829f44f 100644
+--- a/runtime/ppu/ppu_loader.cpp
++++ b/runtime/ppu/ppu_loader.cpp
+@@ -2975,6 +2975,8 @@ extern "C" uint64_t ppu_guest_call_ct(uint32_t code, uint32_t toc,
+     return ctx.gpr[3];
+ }
+ 
++extern "C" ppu_context* g_ppu_main_ctx = nullptr;
++
+ extern "C" int ppu_run(uint32_t entry_opd, uint32_t stack_top)
+ {
+     /* Line-buffer stdout: HLE logs mix printf (stdout) with probe fprintf
+@@ -3001,6 +3003,9 @@ extern "C" int ppu_run(uint32_t entry_opd, uint32_t stack_top)
+      * and concurrently-emitted fences vanished (the boot-loading stall). */
+     { extern uint64_t ppu_thread_register_main(void);
+       ctx.thread_id = ppu_thread_register_main(); }
++    /* The main thread runs on this stack-local ctx, not g_ppu_threads[0].ctx;
++     * publish it so host-side diagnostics can walk its guest stack too. */
++    g_ppu_main_ctx = &ctx;
+ 
+     /* PS3 process-entry ABI: the loader hands _start register state the CRT
+      * (_initialize) consumes directly:
+diff --git a/runtime/syscalls/sys_ppu_thread.c b/runtime/syscalls/sys_ppu_thread.c
+index a0d7e37..330efb0 100644
+--- a/runtime/syscalls/sys_ppu_thread.c
++++ b/runtime/syscalls/sys_ppu_thread.c
+@@ -1294,3 +1294,44 @@ void sys_ppu_thread_init(lv2_syscall_table* tbl)
+     lv2_syscall_register(tbl, SYS_PPU_THREAD_GET_STACK_INFORMATION, sys_ppu_thread_get_stack_information);
+     lv2_syscall_register(tbl, SYS_PPU_THREAD_RENAME,              sys_ppu_thread_rename);
+ }
++
++/* ---------------------------------------------------------------------------
++ * Diagnostic: walk every live guest thread's PPC64 back-chain.
++ * Frame layout (PPU ELF ABI): [sp+0] = caller sp (be64), [caller sp+16] = the
++ * LR this frame saved. Racy by design (threads keep running), which is fine
++ * for a thread parked in a wait loop -- exactly the case this is for.
++ * -----------------------------------------------------------------------*/
++extern uint8_t* vm_base;
++extern ppu_context* g_ppu_main_ctx;
++
++static uint32_t dbg_rd32(uint32_t a) {
++    const uint8_t* p = vm_base + a;
++    return ((uint32_t)p[0] << 24) | ((uint32_t)p[1] << 16) | ((uint32_t)p[2] << 8) | p[3];
++}
++
++static void dump_one(FILE* f, int tid, const char* name, const ppu_context* c)
++{
++    uint32_t sp = (uint32_t)c->gpr[1];
++    fprintf(f, "[GSTACK] tid=%-2d %-24s cia=0x%08X lr=0x%08X sp=0x%08X r3=0x%08X\n",
++            tid, name, (uint32_t)c->cia, (uint32_t)c->lr, sp, (uint32_t)c->gpr[3]);
++    fprintf(f, "[GSTACK]        chain:");
++    for (int depth = 0; depth < 24 && sp && sp < 0xF0000000u; depth++) {
++        uint32_t back = dbg_rd32(sp + 4);          /* low word of the be64 back-chain */
++        if (!back || back <= sp || back - sp > 0x100000u) break;
++        uint32_t lr = dbg_rd32(back + 16 + 4);     /* low word of the saved be64 LR */
++        if (lr >= 0x10000u && lr < 0x01000000u) fprintf(f, " %08X", lr);
++        sp = back;
++    }
++    fprintf(f, "\n");
++}
++
++void ppu_debug_dump_guest_stacks(FILE* f)
++{
++    if (g_ppu_main_ctx) dump_one(f, 1, "main", g_ppu_main_ctx);
++    for (int i = 1; i < PPU_THREAD_MAX; i++) {
++        ppu_thread_info* t = &g_ppu_threads[i];
++        if (t->state != PPU_THREAD_STATE_RUNNING) continue;
++        dump_one(f, i + 1, t->name, &t->ctx);
++    }
++    fflush(f);
++}
+diff --git a/runtime/syscalls/sys_ppu_thread.h b/runtime/syscalls/sys_ppu_thread.h
+index a297bf5..a6a9b79 100644
+--- a/runtime/syscalls/sys_ppu_thread.h
++++ b/runtime/syscalls/sys_ppu_thread.h
+@@ -14,6 +14,7 @@
+ #include "../memory/vm.h"
+ 
+ #include <stdint.h>
++#include <stdio.h>
+ 
+ #ifdef _WIN32
+   #define WIN32_LEAN_AND_MEAN
+@@ -89,6 +90,8 @@ int64_t sys_ppu_thread_create(ppu_context* ctx);
+  * Call before the first sys_ppu_thread_create so no created thread aliases
+  * main (thread_id 0 broke every owner-tracking sync primitive). */
+ uint64_t ppu_thread_register_main(void);
++/* Diagnostic: print every live guest thread's back-chain to f. */
++void ppu_debug_dump_guest_stacks(FILE* f);
+ int64_t sys_ppu_thread_exit(ppu_context* ctx);
+ int64_t sys_ppu_thread_join(ppu_context* ctx);
+ int64_t sys_ppu_thread_detach(ppu_context* ctx);
+-- 
+2.55.0.windows.3
+

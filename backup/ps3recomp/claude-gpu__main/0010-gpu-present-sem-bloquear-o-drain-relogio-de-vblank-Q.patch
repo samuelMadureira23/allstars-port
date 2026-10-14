@@ -1,0 +1,932 @@
+From 4a5b1f171198c4ce2bcc79a845cada2f83995a29 Mon Sep 17 00:00:00 2001
+From: samuel <samuel.madureira23@gmail.com>
+Date: Wed, 14 Oct 2026 14:00:44 -0300
+Subject: [PATCH 10/14] gpu: present sem bloquear o drain, relogio de vblank
+ QPC, cache de shaders em disco (T-021)
+
+Co-Authored-By: Claude Opus 5.5 (1M context) <noreply@anthropic.com>
+---
+ libs/video/rsx_d3d12_backend.c       | 263 +++++++++++++++++++--------
+ libs/video/rsx_shader_cache.c        | 193 ++++++++++++++++++++
+ libs/video/rsx_shader_cache.h        |  53 ++++++
+ libs/video/tests/test_shader_cache.c |  61 +++++++
+ 4 files changed, 491 insertions(+), 79 deletions(-)
+ create mode 100644 libs/video/rsx_shader_cache.c
+ create mode 100644 libs/video/rsx_shader_cache.h
+ create mode 100644 libs/video/tests/test_shader_cache.c
+
+diff --git a/libs/video/rsx_d3d12_backend.c b/libs/video/rsx_d3d12_backend.c
+index 1d48dc0..134f9c7 100644
+--- a/libs/video/rsx_d3d12_backend.c
++++ b/libs/video/rsx_d3d12_backend.c
+@@ -21,6 +21,7 @@
+ #include "rsx_primitives.h"
+ #include "rsx_vertex_fetch.h"
+ #include "rsx_texture_layout.h"
++#include "rsx_shader_cache.h"
+ #include <stdio.h>
+ #include <string.h>
+ #include <stdlib.h>
+@@ -51,6 +52,16 @@
+  * -----------------------------------------------------------------------*/
+ 
+ #define FRAME_COUNT         2   /* double buffering */
++
++/* RSX_RES_SCALE=<1..4>: internal resolution multiplier. Every render target
++ * (backbuffer, offscreen RTs, depth) is allocated RS(guest size) and every
++ * viewport, scissor and copy box is scaled, while all guest-facing sizes
++ * (surface clip, texture dims, the RT cache keys) stay in guest pixels. The
++ * window keeps its size and the flip-model swap chain scales the bigger
++ * backbuffer into it, so 2 also works as 4x supersampling. Fragment programs
++ * that read WPOS get it divided back to guest pixels (rsx_fp_set_wpos_scale). */
++static u32 s_rs = 1;
++#define RS(x) ((x) * s_rs)
+ #define MAX_VERTICES    393216  /* per-frame vertex buffer (dbgfont submits
+                                  * ~7.5k verts/frame; leave generous headroom) */
+ #define MAX_DRAWS         2048  /* per-frame draw records. Sized from the
+@@ -141,6 +152,7 @@ typedef struct {
+     ID3D12Resource*       res;
+     ID3D12Resource*       up;          /* init-upload staging (kept alive) */
+     u32                   off, w, h;   /* raw RSX offset + dims */
++    u32                   pw, ph;      /* resource dims: RS(w) x RS(h) */
+     u32                   dxgi;        /* DXGI_FORMAT of the resource */
+     D3D12_RESOURCE_STATES st;          /* tracked resource state */
+     int                   used;        /* referenced this frame */
+@@ -406,7 +418,7 @@ static void subvp_capture(u32 fi)
+             D3D12_HEAP_PROPERTIES hp = {0}; hp.Type = D3D12_HEAP_TYPE_DEFAULT;
+             D3D12_RESOURCE_DESC td = {0};
+             td.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
+-            td.Width = s_subvp[i].w; td.Height = s_subvp[i].h;
++            td.Width = RS(s_subvp[i].w); td.Height = RS(s_subvp[i].h);
+             td.DepthOrArraySize = 1; td.MipLevels = 1;
+             td.Format = DXGI_FORMAT_R8G8B8A8_UNORM; td.SampleDesc.Count = 1;
+             td.Layout = D3D12_TEXTURE_LAYOUT_UNKNOWN;
+@@ -433,11 +445,11 @@ static void subvp_capture(u32 fi)
+         dstl.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX; dstl.SubresourceIndex = 0;
+         srcl.pResource = s_d3d.render_targets[fi];
+         srcl.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX; srcl.SubresourceIndex = 0;
+-        D3D12_BOX box; box.left = s_subvp[i].x; box.top = s_subvp[i].y;
+-        box.front = 0; box.right = s_subvp[i].x + s_subvp[i].w;
+-        box.bottom = s_subvp[i].y + s_subvp[i].h; box.back = 1;
+-        if (box.right > s_d3d.width)  box.right  = s_d3d.width;
+-        if (box.bottom > s_d3d.height) box.bottom = s_d3d.height;
++        D3D12_BOX box; box.left = RS(s_subvp[i].x); box.top = RS(s_subvp[i].y);
++        box.front = 0; box.right = RS(s_subvp[i].x + s_subvp[i].w);
++        box.bottom = RS(s_subvp[i].y + s_subvp[i].h); box.back = 1;
++        if (box.right > RS(s_d3d.width))  box.right  = RS(s_d3d.width);
++        if (box.bottom > RS(s_d3d.height)) box.bottom = RS(s_d3d.height);
+         s_d3d.cmd_list->lpVtbl->CopyTextureRegion(s_d3d.cmd_list, &dstl, 0, 0, 0, &srcl, &box);
+ 
+         bb[0].Transition.StateBefore = D3D12_RESOURCE_STATE_COPY_SOURCE;
+@@ -474,6 +486,70 @@ static int perf_on(void)
+     if (v < 0) { const char* e = getenv("PERF"); v = e ? atoi(e) : 0; }
+     return v;
+ }
++/* PERF=1 extras: time blocked inside Present, inside wait_for_gpu, and inside
++ * the HLSL compiler on a shader-cache miss. "guest" in the [PERF] line is
++ * everything outside render_frame, so without these a vsync-blocked Present
++ * on the drain thread reads as slow guest code. */
++static double s_perf_present = 0.0, s_perf_gpuwait = 0.0, s_perf_fxc = 0.0;
++
++/* RSX_VSYNC=1: Present(1) blocks the frame-clock thread until vblank. That
++ * thread also drains the FIFO and writes the labels the game fences on, so a
++ * blocked Present stalls the guest too. Default 0: the flip-model swap chain
++ * shows the newest frame at the next vblank without blocking (no tearing in a
++ * window), and the 60 Hz vblank clock paces the game. */
++static UINT rsx_present_interval(void)
++{
++    static int v = -1;
++    if (v < 0) { const char* e = getenv("RSX_VSYNC"); v = (e && *e) ? atoi(e) : 0;
++                 if (v < 0) v = 0; if (v > 4) v = 4; }
++    return (UINT)v;
++}
++
++/* D3DCompile with an on-disk DXBC cache (rsx_shader_cache.c). FXC costs
++ * 60-90 ms per new fragment program (PERF: pso 9-12% on the frames that
++ * missed), which is a visible hitch every time a new effect appears; with the
++ * cache that cost is paid once per shader per machine, not once per run.
++ * The key covers the full source, entry, target and flags, so any decompiler
++ * change misses naturally. RSX_FXC_FAST=1 adds D3DCOMPILE_SKIP_OPTIMIZATION
++ * (faster first compile; the GPU is ~1% of the frame). */
++static HRESULT rsx_d3dcompile(LPCVOID src, SIZE_T n, LPCSTR name,
++                              const D3D_SHADER_MACRO* defs, ID3DInclude* inc,
++                              LPCSTR entry, LPCSTR target, UINT f1, UINT f2,
++                              ID3DBlob** code, ID3DBlob** err)
++{
++    { static int fast = -1;
++      if (fast < 0) { const char* e = getenv("RSX_FXC_FAST"); fast = (e && *e == '1') ? 1 : 0; }
++      if (fast) f1 |= D3DCOMPILE_SKIP_OPTIMIZATION; }
++    if (err) *err = NULL;
++    int cacheable = code && src && n && !defs && !inc && rsx_shc_enabled();
++    uint64_t key = 0;
++    if (cacheable) {
++        key = rsx_shc_hash(RSX_SHC_HASH_INIT, src, (size_t)n);
++        key = rsx_shc_hash_str(key, entry);
++        key = rsx_shc_hash_str(key, target);
++        key = rsx_shc_hash(key, &f1, sizeof f1);
++        key = rsx_shc_hash(key, &f2, sizeof f2);
++        size_t sz = 0;
++        void* p = rsx_shc_load(key, "dxbc", &sz);
++        if (p) {
++            ID3DBlob* b = NULL;
++            if (SUCCEEDED(D3DCreateBlob(sz, &b)) && b) {
++                memcpy(b->lpVtbl->GetBufferPointer(b), p, sz);
++                free(p);
++                *code = b;
++                return S_OK;
++            }
++            free(p);
++        }
++    }
++    double t0 = perf_on() ? perf_now() : 0.0;
++    HRESULT hr = D3DCompile(src, n, name, defs, inc, entry, target, f1, f2, code, err);
++    if (perf_on()) s_perf_fxc += perf_now() - t0;
++    if (cacheable && SUCCEEDED(hr) && *code)
++        rsx_shc_store(key, "dxbc", (*code)->lpVtbl->GetBufferPointer(*code),
++                      (size_t)(*code)->lpVtbl->GetBufferSize(*code));
++    return hr;
++}
+ /* DBG_LOCK: running clip-space centroid of the tracked mesh (RSX_DBG_VTX's
+  * texture), so the debug camera can follow it. The ducks are driven by the
+  * physics sim and drift every frame, so a fixed DBG_CENTER loses them as soon
+@@ -627,8 +703,8 @@ static int init_d3d12(u32 width, u32 height)
+ 
+     /* Create swap chain */
+     DXGI_SWAP_CHAIN_DESC1 sc_desc = {0};
+-    sc_desc.Width = width;
+-    sc_desc.Height = height;
++    sc_desc.Width = RS(width);
++    sc_desc.Height = RS(height);
+     sc_desc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+     sc_desc.SampleDesc.Count = 1;
+     sc_desc.BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT;
+@@ -713,8 +789,8 @@ static int init_d3d12(u32 width, u32 height)
+          * this DSV is shared by every pass -- with a window-sized depth
+          * buffer, draws into larger offscreen RTs (wave's 1920x1080 input
+          * image) were silently cropped to the window rect. */
+-        depth_desc.Width              = 2048;
+-        depth_desc.Height             = 2048;
++        depth_desc.Width              = RS(2048);
++        depth_desc.Height             = RS(2048);
+         depth_desc.DepthOrArraySize   = 1;
+         depth_desc.MipLevels          = 1;
+         depth_desc.Format             = DXGI_FORMAT_D24_UNORM_S8_UINT;
+@@ -875,7 +951,7 @@ static int init_d3d12(u32 width, u32 height)
+         ID3DBlob* ps_blob = NULL;
+         ID3DBlob* err = NULL;
+ 
+-        hr = D3DCompile(vs_hlsl, sizeof(vs_hlsl) - 1, "vs_basic", NULL, NULL,
++        hr = rsx_d3dcompile(vs_hlsl, sizeof(vs_hlsl) - 1, "vs_basic", NULL, NULL,
+                         "main", "vs_5_0", 0, 0, &vs_blob, &err);
+         if (FAILED(hr)) {
+             printf("[D3D12] VS compile failed: %s\n",
+@@ -883,7 +959,7 @@ static int init_d3d12(u32 width, u32 height)
+             if (err) err->lpVtbl->Release(err);
+         }
+ 
+-        hr = D3DCompile(ps_hlsl, sizeof(ps_hlsl) - 1, "ps_basic", NULL, NULL,
++        hr = rsx_d3dcompile(ps_hlsl, sizeof(ps_hlsl) - 1, "ps_basic", NULL, NULL,
+                         "main", "ps_5_0", 0, 0, &ps_blob, &err);
+         if (FAILED(hr)) {
+             printf("[D3D12] PS compile failed: %s\n",
+@@ -984,9 +1060,9 @@ static int init_d3d12(u32 width, u32 height)
+                 "  return float4(i.col.rgb, i.col.a * cov); }\n";
+ 
+             ID3DBlob *vtb = NULL, *ptb = NULL, *e2 = NULL;
+-            hr = D3DCompile(vs_tex, sizeof(vs_tex) - 1, "vs_tex", NULL, NULL, "main", "vs_5_0", 0, 0, &vtb, &e2);
++            hr = rsx_d3dcompile(vs_tex, sizeof(vs_tex) - 1, "vs_tex", NULL, NULL, "main", "vs_5_0", 0, 0, &vtb, &e2);
+             if (FAILED(hr)) printf("[D3D12] VS(tex) compile failed: %s\n", e2 ? (const char*)e2->lpVtbl->GetBufferPointer(e2) : "?");
+-            hr = D3DCompile(ps_tex, sizeof(ps_tex) - 1, "ps_tex", NULL, NULL, "main", "ps_5_0", 0, 0, &ptb, &e2);
++            hr = rsx_d3dcompile(ps_tex, sizeof(ps_tex) - 1, "ps_tex", NULL, NULL, "main", "ps_5_0", 0, 0, &ptb, &e2);
+             if (FAILED(hr)) printf("[D3D12] PS(tex) compile failed: %s\n", e2 ? (const char*)e2->lpVtbl->GetBufferPointer(e2) : "?");
+ 
+             if (vtb && ptb) {
+@@ -1217,7 +1293,15 @@ static int init_d3d12(u32 width, u32 height)
+  * Frame sync helpers
+  * -----------------------------------------------------------------------*/
+ 
++static void wait_for_gpu_inner(void);
+ static void wait_for_gpu(void)
++{
++    double t0 = perf_on() ? perf_now() : 0.0;
++    wait_for_gpu_inner();
++    if (perf_on()) s_perf_gpuwait += perf_now() - t0;
++}
++
++static void wait_for_gpu_inner(void)
+ {
+     u32 fi = s_d3d.frame_index;
+     s_d3d.fence_values[fi]++;
+@@ -1287,7 +1371,7 @@ static void dump_backbuffer_bmp(void)
+ {
+     if (!s_d3d.readback_buf) return;
+     void* mapped = NULL;
+-    D3D12_RANGE rr = {0, (SIZE_T)s_d3d.readback_pitch * s_d3d.height};
++    D3D12_RANGE rr = {0, (SIZE_T)s_d3d.readback_pitch * RS(s_d3d.height)};
+     if (FAILED(s_d3d.readback_buf->lpVtbl->Map(s_d3d.readback_buf, 0, &rr, &mapped)) || !mapped)
+         return;
+ 
+@@ -1298,7 +1382,7 @@ static void dump_backbuffer_bmp(void)
+              dir ? dir : "", dir ? "/" : "", s_dump_name ? s_dump_name : "frame", idx++);
+     FILE* f = fopen(path, "wb");
+     if (f) {
+-        u32 w = s_d3d.width, h = s_d3d.height;
++        u32 w = RS(s_d3d.width), h = RS(s_d3d.height);
+         u32 padded = (w * 3 + 3) & ~3u;
+         u32 imgsz  = padded * h;
+         u32 filesz = 54 + imgsz;
+@@ -1326,7 +1410,7 @@ static void dump_backbuffer_bmp(void)
+             free(row);
+         }
+         fclose(f);
+-        printf("[D3D12] dumped %s (%ux%u)\n", path, s_d3d.width, s_d3d.height);
++        printf("[D3D12] dumped %s (%ux%u)\n", path, RS(s_d3d.width), RS(s_d3d.height));
+     }
+     D3D12_RANGE wr = {0, 0};
+     s_d3d.readback_buf->lpVtbl->Unmap(s_d3d.readback_buf, 0, &wr);
+@@ -1549,13 +1633,13 @@ static void rsx_capture_frame(u32 fi, u32 ndraws, u32 capidx)
+ 
+     /* Backbuffer (in PRESENT state at capture time) + every used offscreen RT. */
+     snprintf(path, sizeof path, "%s/backbuffer.bmp", dir);
+-    cap_readback_write(s_d3d.render_targets[fi], s_d3d.width, s_d3d.height,
++    cap_readback_write(s_d3d.render_targets[fi], RS(s_d3d.width), RS(s_d3d.height),
+                        DXGI_FORMAT_R8G8B8A8_UNORM, D3D12_RESOURCE_STATE_PRESENT, fi, path);
+     for (int i = 0; i < MAX_OFF_RTS; i++) {
+         OffRT* r = &s_d3d.off_rt[i];
+         if (!r->res || !r->used) continue;
+         snprintf(path, sizeof path, "%s/rt_%08X.bmp", dir, r->off);
+-        cap_readback_write(r->res, r->w, r->h, r->dxgi, r->st, fi, path);
++        cap_readback_write(r->res, r->pw, r->ph, r->dxgi, r->st, fi, path);
+     }
+     printf("[RSXCAP] frame %llu -> %s (%u ops)\n",
+            (unsigned long long)s_d3d.frame_count, dir, ndraws);
+@@ -1601,9 +1685,9 @@ static void compile_vp(void)
+         "  if (cov <= 0.5) discard; return float4(i.col0.rgb, 1); }\n";
+ 
+     ID3DBlob *vb=NULL,*pb=NULL,*e=NULL;
+-    HRESULT hr = D3DCompile(hlsl, strlen(hlsl), "vp", NULL, NULL, "main", "vs_5_0", 0, 0, &vb, &e);
++    HRESULT hr = rsx_d3dcompile(hlsl, strlen(hlsl), "vp", NULL, NULL, "main", "vs_5_0", 0, 0, &vb, &e);
+     if (FAILED(hr)) { printf("[VP] VS compile FAIL: %s\n", e?(const char*)e->lpVtbl->GetBufferPointer(e):"?"); if(e)e->lpVtbl->Release(e); s_d3d.vp_compiled_bytes=st->vp_ucode_bytes; return; }
+-    hr = D3DCompile(ps, sizeof(ps)-1, "vpps", NULL, NULL, "main", "ps_5_0", 0, 0, &pb, &e);
++    hr = rsx_d3dcompile(ps, sizeof(ps)-1, "vpps", NULL, NULL, "main", "ps_5_0", 0, 0, &pb, &e);
+     if (FAILED(hr)) { printf("[VP] PS compile FAIL: %s\n", e?(const char*)e->lpVtbl->GetBufferPointer(e):"?"); if(e)e->lpVtbl->Release(e); if(vb)vb->lpVtbl->Release(vb); s_d3d.vp_compiled_bytes=st->vp_ucode_bytes; return; }
+ 
+     /* The decompiled VS declares inputs a0:ATTR0 .. a15:ATTR15 and the HLSL
+@@ -1665,7 +1749,7 @@ static void compile_vp(void)
+             "  float4 t4:TEXCOORD4; float4 t5:TEXCOORD5; float4 t6:TEXCOORD6; float4 t7:TEXCOORD7; };\n"
+             "float4 main(PSIn i):SV_TARGET{ return float4(i.col0.rgb, 1); }\n";
+         ID3DBlob *pcb=NULL,*ec=NULL;
+-        if (SUCCEEDED(D3DCompile(ps_col, sizeof(ps_col)-1, "vppsc", NULL, NULL,
++        if (SUCCEEDED(rsx_d3dcompile(ps_col, sizeof(ps_col)-1, "vppsc", NULL, NULL,
+                                  "main", "ps_5_0", 0, 0, &pcb, &ec)) && pcb) {
+             pd.PS.pShaderBytecode = pcb->lpVtbl->GetBufferPointer(pcb);
+             pd.PS.BytecodeLength  = pcb->lpVtbl->GetBufferSize(pcb);
+@@ -1801,7 +1885,7 @@ static int vp_get_vs(const rsx_state* st)
+         }
+     }
+     ID3DBlob* vb = NULL; ID3DBlob* e = NULL;
+-    HRESULT hr = D3DCompile(hlsl, strlen(hlsl), "guest_vp2", NULL, NULL,
++    HRESULT hr = rsx_d3dcompile(hlsl, strlen(hlsl), "guest_vp2", NULL, NULL,
+                             "main", "vs_5_0", 0, 0, &vb, &e);
+     if (e) e->lpVtbl->Release(e);
+     if (FAILED(hr) || !vb) {
+@@ -2264,7 +2348,7 @@ static ID3D12PipelineState* vp_get_fp_pso(int vs_idx, u32 fp_addr, u32 blend, in
+         if (rp) memcpy(rp, "return float4(1,0,1,1)", 23);
+     }
+     ID3DBlob* pb = NULL; ID3DBlob* e = NULL;
+-    HRESULT hr = D3DCompile(hlsl, strlen(hlsl), "guest_fp", NULL, NULL,
++    HRESULT hr = rsx_d3dcompile(hlsl, strlen(hlsl), "guest_fp", NULL, NULL,
+                             "main", "ps_5_0", 0, 0, &pb, &e);
+     if (FAILED(hr) || !pb) {
+         static int _e2=0; if (_e2++<16)
+@@ -3336,10 +3420,11 @@ static int off_rt_get(u32 off, u32 w, u32 h, u32 rsx_fmt)
+         }
+     }
+     OffRT* r = &s_d3d.off_rt[slot];
++    const u32 pw = RS(w), ph = RS(h);
+     D3D12_HEAP_PROPERTIES hp = {0}; hp.Type = D3D12_HEAP_TYPE_DEFAULT;
+     D3D12_RESOURCE_DESC td = {0};
+     td.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
+-    td.Width = w; td.Height = h; td.DepthOrArraySize = 1; td.MipLevels = 1;
++    td.Width = pw; td.Height = ph; td.DepthOrArraySize = 1; td.MipLevels = 1;
+     td.Format = want_fmt; td.SampleDesc.Count = 1;
+     td.Layout = D3D12_TEXTURE_LAYOUT_UNKNOWN;
+     td.Flags = D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET;
+@@ -3350,7 +3435,7 @@ static int off_rt_get(u32 off, u32 w, u32 h, u32 rsx_fmt)
+             D3D12_RESOURCE_STATE_COPY_DEST, &cv,
+             &IID_ID3D12Resource, (void**)&r->res)))
+         return -1;
+-    r->off = off; r->w = w; r->h = h; r->dxgi = (u32)want_fmt;
++    r->off = off; r->w = w; r->h = h; r->pw = pw; r->ph = ph; r->dxgi = (u32)want_fmt;
+     r->st = D3D12_RESOURCE_STATE_COPY_DEST;
+     r->used = 1;
+ 
+@@ -3365,13 +3450,13 @@ static int off_rt_get(u32 off, u32 w, u32 h, u32 rsx_fmt)
+         u32 bpp = (want_fmt == DXGI_FORMAT_R16G16B16A16_FLOAT) ? 8u :
+                   (want_fmt == DXGI_FORMAT_R32G32B32A32_FLOAT) ? 16u :
+                   (want_fmt == DXGI_FORMAT_R32_FLOAT) ? 4u : 4u;
+-        u32 pitch = (w * bpp + 255) & ~255u;
++        u32 pitch = (pw * bpp + 255) & ~255u;
+         u32 src = cellGcmResolveOffset(off);
+         if (vm_base && src != 0xFFFFFFFFu) {
+             D3D12_HEAP_PROPERTIES hu = {0}; hu.Type = D3D12_HEAP_TYPE_UPLOAD;
+             D3D12_RESOURCE_DESC bd = {0};
+             bd.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
+-            bd.Width = (u64)pitch * h; bd.Height = 1; bd.DepthOrArraySize = 1;
++            bd.Width = (u64)pitch * ph; bd.Height = 1; bd.DepthOrArraySize = 1;
+             bd.MipLevels = 1; bd.SampleDesc.Count = 1;
+             bd.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+             if (SUCCEEDED(s_d3d.device->lpVtbl->CreateCommittedResource(
+@@ -3381,29 +3466,26 @@ static int off_rt_get(u32 off, u32 w, u32 h, u32 rsx_fmt)
+                 void* mp = NULL; D3D12_RANGE nr = {0,0};
+                 if (SUCCEEDED(r->up->lpVtbl->Map(r->up, 0, &nr, &mp)) && mp) {
+                     const u8* sp = vm_base + src;
+-                    for (u32 y = 0; y < h; y++) {
+-                        const u8* srow = sp + (u64)y * w * bpp;
++                    /* One resource pixel per guest pixel at RS=1; above that
++                     * each guest pixel is replicated RS x RS times. */
++                    for (u32 y = 0; y < ph; y++) {
++                        const u8* srow = sp + (u64)(y / s_rs) * w * bpp;
+                         u8* drow = (u8*)mp + (u64)y * pitch;
+-                        if (want_fmt == DXGI_FORMAT_R8G8B8A8_UNORM) {
+-                            /* guest A8R8G8B8 (bytes A,R,G,B) -> R,G,B,A */
+-                            for (u32 x = 0; x < w; x++) {
+-                                drow[x*4+0] = srow[x*4+1];
+-                                drow[x*4+1] = srow[x*4+2];
+-                                drow[x*4+2] = srow[x*4+3];
+-                                drow[x*4+3] = srow[x*4+0];
+-                            }
+-                        } else if (want_fmt == DXGI_FORMAT_R16G16B16A16_FLOAT) {
+-                            for (u32 x = 0; x < w * 4; x++) {   /* u16 halves, BE */
+-                                drow[x*2+0] = srow[x*2+1];
+-                                drow[x*2+1] = srow[x*2+0];
+-                            }
+-                        } else {                                 /* u32 floats, BE */
+-                            u32 nw = (w * bpp) / 4;
+-                            for (u32 x = 0; x < nw; x++) {
+-                                drow[x*4+0] = srow[x*4+3];
+-                                drow[x*4+1] = srow[x*4+2];
+-                                drow[x*4+2] = srow[x*4+1];
+-                                drow[x*4+3] = srow[x*4+0];
++                        for (u32 x = 0; x < pw; x++) {
++                            const u8* sx = srow + (u64)(x / s_rs) * bpp;
++                            u8* dx = drow + (u64)x * bpp;
++                            if (want_fmt == DXGI_FORMAT_R8G8B8A8_UNORM) {
++                                /* guest A8R8G8B8 (bytes A,R,G,B) -> R,G,B,A */
++                                dx[0] = sx[1]; dx[1] = sx[2]; dx[2] = sx[3]; dx[3] = sx[0];
++                            } else if (want_fmt == DXGI_FORMAT_R16G16B16A16_FLOAT) {
++                                for (u32 k = 0; k < bpp; k += 2) {   /* u16 halves, BE */
++                                    dx[k+0] = sx[k+1]; dx[k+1] = sx[k+0];
++                                }
++                            } else {                                 /* u32 floats, BE */
++                                for (u32 k = 0; k < bpp; k += 4) {
++                                    dx[k+0] = sx[k+3]; dx[k+1] = sx[k+2];
++                                    dx[k+2] = sx[k+1]; dx[k+3] = sx[k+0];
++                                }
+                             }
+                         }
+                     }
+@@ -3414,8 +3496,8 @@ static int off_rt_get(u32 off, u32 w, u32 h, u32 rsx_fmt)
+                     csrc.pResource = r->up;
+                     csrc.Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
+                     csrc.PlacedFootprint.Footprint.Format   = want_fmt;
+-                    csrc.PlacedFootprint.Footprint.Width    = w;
+-                    csrc.PlacedFootprint.Footprint.Height   = h;
++                    csrc.PlacedFootprint.Footprint.Width    = pw;
++                    csrc.PlacedFootprint.Footprint.Height   = ph;
+                     csrc.PlacedFootprint.Footprint.Depth    = 1;
+                     csrc.PlacedFootprint.Footprint.RowPitch = pitch;
+                     s_d3d.cmd_list->lpVtbl->CopyTextureRegion(s_d3d.cmd_list, &cdst, 0, 0, 0, &csrc, NULL);
+@@ -3537,7 +3619,7 @@ static void screen_copy_capture(u32 fi)
+                 D3D12_HEAP_PROPERTIES hp = {0}; hp.Type = D3D12_HEAP_TYPE_DEFAULT;
+                 D3D12_RESOURCE_DESC td = {0};
+                 td.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
+-                td.Width = s_d3d.width; td.Height = s_d3d.height;
++                td.Width = RS(s_d3d.width); td.Height = RS(s_d3d.height);
+                 td.DepthOrArraySize = 1; td.MipLevels = 1;
+                 td.Format = DXGI_FORMAT_R8G8B8A8_UNORM; td.SampleDesc.Count = 1;
+                 td.Layout = D3D12_TEXTURE_LAYOUT_UNKNOWN;
+@@ -3587,8 +3669,8 @@ static void screen_copy_capture(u32 fi)
+                       cd.pResource = s_d3d.readback_buf;
+                       cd.Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
+                       cd.PlacedFootprint.Footprint.Format   = DXGI_FORMAT_R8G8B8A8_UNORM;
+-                      cd.PlacedFootprint.Footprint.Width    = s_d3d.width;
+-                      cd.PlacedFootprint.Footprint.Height   = s_d3d.height;
++                      cd.PlacedFootprint.Footprint.Width    = RS(s_d3d.width);
++                      cd.PlacedFootprint.Footprint.Height   = RS(s_d3d.height);
+                       cd.PlacedFootprint.Footprint.Depth    = 1;
+                       cd.PlacedFootprint.Footprint.RowPitch = s_d3d.readback_pitch;
+                       cs.pResource = s_screen_copy;
+@@ -3663,8 +3745,8 @@ static void composite_present(u32 fi)
+                     want, r->dxgi, 10);
+         return;
+     }
+-    u32 cw = r->w < s_d3d.width  ? r->w : s_d3d.width;
+-    u32 ch = r->h < s_d3d.height ? r->h : s_d3d.height;
++    u32 cw = r->pw < RS(s_d3d.width)  ? r->pw : RS(s_d3d.width);
++    u32 ch = r->ph < RS(s_d3d.height) ? r->ph : RS(s_d3d.height);
+     if (!cw || !ch) return;
+     { static int n = 0;
+       if (n++ < 3) fprintf(stderr, "[COMPOSITE] RT 0x%08X %ux%u -> backbuffer%c",
+@@ -3801,12 +3883,12 @@ static void render_frame(void)
+ 
+     /* Lazily create the readback buffer the first time a dump is requested. */
+     if (s_d3d.dump_frames_left > 0 && !s_d3d.readback_buf) {
+-        s_d3d.readback_pitch = (s_d3d.width * 4 + 255) & ~255u;
++        s_d3d.readback_pitch = (RS(s_d3d.width) * 4 + 255) & ~255u;
+         D3D12_HEAP_PROPERTIES hp = {0};
+         hp.Type = D3D12_HEAP_TYPE_READBACK;
+         D3D12_RESOURCE_DESC rd = {0};
+         rd.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
+-        rd.Width = (u64)s_d3d.readback_pitch * s_d3d.height;
++        rd.Width = (u64)s_d3d.readback_pitch * RS(s_d3d.height);
+         rd.Height = 1; rd.DepthOrArraySize = 1; rd.MipLevels = 1;
+         rd.SampleDesc.Count = 1;
+         rd.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+@@ -4275,8 +4357,8 @@ static void render_frame(void)
+         1.0f, 0, 0, NULL);
+ 
+     /* Set viewport and scissor */
+-    D3D12_VIEWPORT viewport = {0, 0, (float)s_d3d.width, (float)s_d3d.height, 0.0f, 1.0f};
+-    D3D12_RECT scissor = {0, 0, (LONG)s_d3d.width, (LONG)s_d3d.height};
++    D3D12_VIEWPORT viewport = {0, 0, (float)RS(s_d3d.width), (float)RS(s_d3d.height), 0.0f, 1.0f};
++    D3D12_RECT scissor = {0, 0, (LONG)RS(s_d3d.width), (LONG)RS(s_d3d.height)};
+     s_d3d.cmd_list->lpVtbl->RSSetViewports(s_d3d.cmd_list, 1, &viewport);
+     s_d3d.cmd_list->lpVtbl->RSSetScissorRects(s_d3d.cmd_list, 1, &scissor);
+ 
+@@ -4471,12 +4553,12 @@ static void render_frame(void)
+                     D3D12_CPU_DESCRIPTOR_HANDLE rh[4];
+                     UINT nrt = 1;
+                     rh[0] = rtv_handle;
+-                    D3D12_VIEWPORT vp = {0, 0, (float)s_d3d.width, (float)s_d3d.height, 0.0f, 1.0f};
++                    D3D12_VIEWPORT vp = {0, 0, (float)RS(s_d3d.width), (float)RS(s_d3d.height), 0.0f, 1.0f};
+                     if (want >= 0) {
+                         off_rt_transition(want, D3D12_RESOURCE_STATE_RENDER_TARGET);
+                         rh[0] = off_rt_rtv(want);
+-                        vp.Width  = (float)s_d3d.off_rt[want].w;
+-                        vp.Height = (float)s_d3d.off_rt[want].h;
++                        vp.Width  = (float)s_d3d.off_rt[want].pw;
++                        vp.Height = (float)s_d3d.off_rt[want].ph;
+                     }
+                     for (int _m = 0; _m < 3 && wantm[_m] >= 0; _m++) {
+                         off_rt_transition(wantm[_m], D3D12_RESOURCE_STATE_RENDER_TARGET);
+@@ -4583,6 +4665,9 @@ static void render_frame(void)
+                         dvp.Width    = (float)dr->vp_w;
+                         dvp.Height   = (float)dr->vp_h;
+                     }
++                    /* Decided in guest pixels above; rasterise at RS. */
++                    dvp.TopLeftX *= (float)s_rs; dvp.TopLeftY *= (float)s_rs;
++                    dvp.Width    *= (float)s_rs; dvp.Height   *= (float)s_rs;
+                     D3D12_RECT dsc = {(LONG)dvp.TopLeftX, (LONG)dvp.TopLeftY,
+                                       (LONG)(dvp.TopLeftX + dvp.Width),
+                                       (LONG)(dvp.TopLeftY + dvp.Height)};
+@@ -4666,8 +4751,8 @@ static void render_frame(void)
+             /* Leave the backbuffer bound for the dump/present epilogue. */
+             if (cur_rt >= 0) {
+                 s_d3d.cmd_list->lpVtbl->OMSetRenderTargets(s_d3d.cmd_list, 1, &rtv_handle, FALSE, &dsv_handle);
+-                D3D12_VIEWPORT vp = {0, 0, (float)s_d3d.width, (float)s_d3d.height, 0.0f, 1.0f};
+-                D3D12_RECT sc = {0, 0, (LONG)s_d3d.width, (LONG)s_d3d.height};
++                D3D12_VIEWPORT vp = {0, 0, (float)RS(s_d3d.width), (float)RS(s_d3d.height), 0.0f, 1.0f};
++                D3D12_RECT sc = {0, 0, (LONG)RS(s_d3d.width), (LONG)RS(s_d3d.height)};
+                 s_d3d.cmd_list->lpVtbl->RSSetViewports(s_d3d.cmd_list, 1, &vp);
+                 s_d3d.cmd_list->lpVtbl->RSSetScissorRects(s_d3d.cmd_list, 1, &sc);
+             }
+@@ -4736,9 +4821,12 @@ static void render_frame(void)
+         s_t_prev = now;
+         if (++s_n % 20 == 0) {
+             double fr = s_perf_frame > 0 ? s_perf_frame : 1;
++            unsigned shc_h = 0, shc_m = 0;
++            rsx_shc_stats(&shc_h, &shc_m, NULL);
+             fprintf(stderr, "[PERF] %.2f fps | tex %.2fs (%.0f%%, %d calls) | vtx %.2fs"
+                             " (%.0f%%, %.0fk verts) | render_frame %.2fs (%.0f%%)"
+-                            " | prepass %.2fs (%.0f%%) [srv %.2fs %.0f%% | pso %.2fs %.0f%% %d calls %d MISS %dKB hashed] | guest %.2fs (%.0f%%)%c",
++                            " | prepass %.2fs (%.0f%%) [srv %.2fs %.0f%% | pso %.2fs %.0f%% %d calls %d MISS %dKB hashed] | guest %.2fs (%.0f%%)"
++                            " | present %.2fs (%.0f%%) gpuwait %.2fs (%.0f%%) fxc %.2fs | shc hit %u miss %u%c",
+                     20.0 / fr,
+                     s_perf_tex, 100.0 * s_perf_tex / fr, s_perf_ntex,
+                     s_perf_vtx, 100.0 * s_perf_vtx / fr,
+@@ -4748,9 +4836,13 @@ static void render_frame(void)
+                     s_perf_srv, 100.0 * s_perf_srv / fr,
+                     s_perf_pso, 100.0 * s_perf_pso / fr,
+                     s_perf_pso_calls, s_perf_pso_miss, s_perf_pso_hashbytes / 1024,
+-                    fr - s_perf_rf, 100.0 * (fr - s_perf_rf) / fr, 10);
++                    fr - s_perf_rf, 100.0 * (fr - s_perf_rf) / fr,
++                    s_perf_present, 100.0 * s_perf_present / fr,
++                    s_perf_gpuwait, 100.0 * s_perf_gpuwait / fr, s_perf_fxc,
++                    shc_h, shc_m, 10);
+             s_perf_frame = 0.0; s_perf_tex = 0.0; s_perf_vtx = 0.0; s_perf_rf = 0.0;
+             s_perf_gpu = 0.0; s_perf_pre = 0.0; s_perf_srv = 0.0; s_perf_pso = 0.0;
++            s_perf_present = 0.0; s_perf_gpuwait = 0.0; s_perf_fxc = 0.0;
+             s_perf_pso_calls = 0; s_perf_pso_miss = 0; s_perf_pso_hashbytes = 0;
+             s_perf_ntex = 0; s_perf_texbytes = 0; s_perf_nverts = 0;
+         }
+@@ -4811,15 +4903,15 @@ static void render_frame(void)
+             OffRT* r = &s_d3d.off_rt[rt];
+             u32 bpp = (r->dxgi == DXGI_FORMAT_R16G16B16A16_FLOAT) ? 8 :
+                       (r->dxgi == DXGI_FORMAT_R32G32B32A32_FLOAT) ? 16 : 4;
+-            u32 pitch = (r->w * bpp + 255) & ~255u;
++            u32 pitch = (r->pw * bpp + 255) & ~255u;
+             fprintf(stderr, "[RTT_SAVERT] rt=%d w=%u h=%u bpp=%u pitch=%u dxgi=%d bytes=%llu\n",
+-                    rt, r->w, r->h, bpp, pitch, (int)r->dxgi,
+-                    (unsigned long long)((u64)pitch * r->h));
++                    rt, r->pw, r->ph, bpp, pitch, (int)r->dxgi,
++                    (unsigned long long)((u64)pitch * r->ph));
+             if (!s_rtsave_buf) {
+                 D3D12_HEAP_PROPERTIES hp = {0}; hp.Type = D3D12_HEAP_TYPE_READBACK;
+                 D3D12_RESOURCE_DESC rd = {0};
+                 rd.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
+-                rd.Width = (u64)pitch * r->h; rd.Height = 1; rd.DepthOrArraySize = 1;
++                rd.Width = (u64)pitch * r->ph; rd.Height = 1; rd.DepthOrArraySize = 1;
+                 rd.MipLevels = 1; rd.SampleDesc.Count = 1;
+                 rd.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+                 s_d3d.device->lpVtbl->CreateCommittedResource(
+@@ -4834,8 +4926,8 @@ static void render_frame(void)
+                 cdst.pResource = s_rtsave_buf;
+                 cdst.Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
+                 cdst.PlacedFootprint.Footprint.Format   = (DXGI_FORMAT)r->dxgi;
+-                cdst.PlacedFootprint.Footprint.Width    = r->w;
+-                cdst.PlacedFootprint.Footprint.Height   = r->h;
++                cdst.PlacedFootprint.Footprint.Width    = r->pw;
++                cdst.PlacedFootprint.Footprint.Height   = r->ph;
+                 cdst.PlacedFootprint.Footprint.Depth    = 1;
+                 cdst.PlacedFootprint.Footprint.RowPitch = pitch;
+                 csrc.pResource = r->res;
+@@ -4843,7 +4935,7 @@ static void render_frame(void)
+                 s_d3d.cmd_list->lpVtbl->CopyTextureRegion(s_d3d.cmd_list, &cdst, 0, 0, 0, &csrc, NULL);
+                 off_rt_transition(rt, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+                 s_rtsave_state = 1;
+-                s_rtsave_w = r->w; s_rtsave_h = r->h;
++                s_rtsave_w = r->pw; s_rtsave_h = r->ph;
+                 s_rtsave_pitch = pitch; s_rtsave_dxgi = r->dxgi;
+                 fprintf(stderr, "[RTT_SAVERT] copy queued: rt=%d %ux%u pitch=%u\n",
+                         rt, r->w, r->h, pitch);
+@@ -4893,8 +4985,8 @@ skip_dump_consider: ;
+         dst.Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
+         dst.PlacedFootprint.Offset = 0;
+         dst.PlacedFootprint.Footprint.Format   = DXGI_FORMAT_R8G8B8A8_UNORM;
+-        dst.PlacedFootprint.Footprint.Width    = s_d3d.width;
+-        dst.PlacedFootprint.Footprint.Height   = s_d3d.height;
++        dst.PlacedFootprint.Footprint.Width    = RS(s_d3d.width);
++        dst.PlacedFootprint.Footprint.Height   = RS(s_d3d.height);
+         dst.PlacedFootprint.Footprint.Depth    = 1;
+         dst.PlacedFootprint.Footprint.RowPitch = s_d3d.readback_pitch;
+         src.pResource = s_d3d.render_targets[fi];
+@@ -5071,8 +5163,11 @@ skip_dump_consider: ;
+       } }
+ 
+     /* Present */
+-    if (s_present_this_frame)
+-        s_d3d.swap_chain->lpVtbl->Present(s_d3d.swap_chain, 1, 0); /* vsync */   /* skipped for an offscreen-only batch */
++    if (s_present_this_frame) {   /* skipped for an offscreen-only batch */
++        double _p0 = perf_on() ? perf_now() : 0.0;
++        s_d3d.swap_chain->lpVtbl->Present(s_d3d.swap_chain, rsx_present_interval(), 0);
++        if (perf_on()) s_perf_present += perf_now() - _p0;
++    }
+ 
+     move_to_next_frame();
+ 
+@@ -6589,6 +6684,16 @@ int rsx_d3d12_backend_init(u32 width, u32 height, const char* title)
+     memset(&s_d3d, 0, sizeof(s_d3d));
+     s_d3d.width = width;
+     s_d3d.height = height;
++    { const char* e = getenv("RSX_RES_SCALE");
++      int v = (e && *e) ? atoi(e) : 1;
++      if (v < 1) v = 1;
++      if (v > 4) v = 4;           /* depth is RS(2048): 8192 at 4, D3D12 max 16384 */
++      s_rs = (u32)v;
++      extern void rsx_fp_set_wpos_scale(float s);
++      rsx_fp_set_wpos_scale((float)s_rs);
++      if (s_rs > 1)
++          printf("[D3D12] internal resolution x%u: backbuffer %ux%u\n",
++                 s_rs, RS(width), RS(height)); }
+     s_d3d.clear_color[0] = 0.0f;
+     s_d3d.clear_color[1] = 0.0f;
+     s_d3d.clear_color[2] = 0.1f;
+diff --git a/libs/video/rsx_shader_cache.c b/libs/video/rsx_shader_cache.c
+new file mode 100644
+index 0000000..40c0c0f
+--- /dev/null
++++ b/libs/video/rsx_shader_cache.c
+@@ -0,0 +1,193 @@
++/*
++ * ps3recomp - on-disk cache of compiled GPU shader blobs (see header).
++ */
++#include "rsx_shader_cache.h"
++
++#include <stdio.h>
++#include <stdlib.h>
++#include <string.h>
++
++#ifdef _WIN32
++#  ifndef WIN32_LEAN_AND_MEAN
++#    define WIN32_LEAN_AND_MEAN
++#  endif
++#  include <windows.h>
++#else
++#  include <sys/stat.h>
++#  include <unistd.h>
++#  include <pthread.h>
++#endif
++
++#define SHC_MAGIC   0x43585352u   /* "RSXC" little-endian */
++#define SHC_VERSION 1u
++
++typedef struct shc_header {
++    uint32_t magic;
++    uint32_t version;
++    uint64_t key;
++    uint64_t size;
++    uint64_t payload_hash;
++} shc_header;
++
++static char     s_dir[1024];
++static int      s_state = -1;          /* -1 = not initialised, 0 = off, 1 = on */
++static volatile long s_hits, s_misses, s_stores;
++
++#ifdef _WIN32
++static INIT_ONCE s_once = INIT_ONCE_STATIC_INIT;
++static long shc_inc(volatile long* p) { return InterlockedIncrement(p); }
++#else
++static pthread_once_t s_once = PTHREAD_ONCE_INIT;
++static long shc_inc(volatile long* p) { return __sync_add_and_fetch(p, 1); }
++#endif
++
++uint64_t rsx_shc_hash(uint64_t h, const void* data, size_t n)
++{
++    const unsigned char* p = (const unsigned char*)data;
++    for (size_t i = 0; i < n; i++) { h ^= p[i]; h *= 0x100000001b3ull; }
++    return h;
++}
++
++uint64_t rsx_shc_hash_str(uint64_t h, const char* s)
++{
++    if (!s) s = "";
++    return rsx_shc_hash(h, s, strlen(s) + 1);
++}
++
++static void shc_init(void)
++{
++    const char* e = getenv("RSX_SHADER_CACHE");
++    if (e && e[0] == '0') { s_state = 0; return; }
++
++    const char* d = getenv("RSX_SHADER_CACHE_DIR");
++    if (d && *d) {
++        snprintf(s_dir, sizeof s_dir, "%s", d);
++    } else {
++#ifdef _WIN32
++        char exe[MAX_PATH];
++        DWORD n = GetModuleFileNameA(NULL, exe, MAX_PATH);
++        if (n == 0 || n >= MAX_PATH) { snprintf(s_dir, sizeof s_dir, "shadercache"); }
++        else {
++            char* slash = strrchr(exe, '\\');
++            if (slash) *slash = 0; else exe[0] = 0;
++            snprintf(s_dir, sizeof s_dir, "%s%sshadercache", exe, exe[0] ? "\\" : "");
++        }
++#else
++        snprintf(s_dir, sizeof s_dir, "shadercache");
++#endif
++    }
++
++#ifdef _WIN32
++    if (!CreateDirectoryA(s_dir, NULL) && GetLastError() != ERROR_ALREADY_EXISTS) {
++        fprintf(stderr, "[SHC] cannot create %s (err %lu) -- shader cache off\n",
++                s_dir, (unsigned long)GetLastError());
++        s_state = 0; return;
++    }
++#else
++    if (mkdir(s_dir, 0755) != 0) {
++        struct stat st;
++        if (stat(s_dir, &st) != 0 || !S_ISDIR(st.st_mode)) {
++            fprintf(stderr, "[SHC] cannot create %s -- shader cache off\n", s_dir);
++            s_state = 0; return;
++        }
++    }
++#endif
++    fprintf(stderr, "[SHC] shader cache: %s\n", s_dir);
++    s_state = 1;
++}
++
++#ifdef _WIN32
++static BOOL CALLBACK shc_init_cb(PINIT_ONCE o, PVOID p, PVOID* c)
++{ (void)o; (void)p; (void)c; shc_init(); return TRUE; }
++#endif
++
++int rsx_shc_enabled(void)
++{
++#ifdef _WIN32
++    InitOnceExecuteOnce(&s_once, shc_init_cb, NULL, NULL);
++#else
++    pthread_once(&s_once, shc_init);
++#endif
++    return s_state == 1;
++}
++
++static void shc_path(char* out, size_t cap, uint64_t key, const char* ext)
++{
++#ifdef _WIN32
++    const char* sep = "\\";
++#else
++    const char* sep = "/";
++#endif
++    snprintf(out, cap, "%s%s%016llx.%s", s_dir, sep, (unsigned long long)key,
++             ext ? ext : "bin");
++}
++
++void* rsx_shc_load(uint64_t key, const char* ext, size_t* out_size)
++{
++    if (out_size) *out_size = 0;
++    if (!rsx_shc_enabled()) return NULL;
++
++    char path[1200];
++    shc_path(path, sizeof path, key, ext);
++    FILE* f = fopen(path, "rb");
++    if (!f) { shc_inc(&s_misses); return NULL; }
++
++    shc_header h;
++    void* buf = NULL;
++    if (fread(&h, sizeof h, 1, f) == 1 && h.magic == SHC_MAGIC &&
++        h.version == SHC_VERSION && h.key == key && h.size > 0 &&
++        h.size < (64u << 20)) {
++        buf = malloc((size_t)h.size);
++        if (buf && (fread(buf, 1, (size_t)h.size, f) != (size_t)h.size ||
++                    rsx_shc_hash(RSX_SHC_HASH_INIT, buf, (size_t)h.size) != h.payload_hash)) {
++            free(buf);
++            buf = NULL;
++        }
++    }
++    fclose(f);
++    if (!buf) { shc_inc(&s_misses); return NULL; }
++    shc_inc(&s_hits);
++    if (out_size) *out_size = (size_t)h.size;
++    return buf;
++}
++
++int rsx_shc_store(uint64_t key, const char* ext, const void* data, size_t size)
++{
++    if (!data || size == 0 || !rsx_shc_enabled()) return -1;
++
++    char path[1200], tmp[1260];
++    shc_path(path, sizeof path, key, ext);
++    static volatile long s_tmpseq;
++    long seq = shc_inc(&s_tmpseq);
++#ifdef _WIN32
++    snprintf(tmp, sizeof tmp, "%s.%lu.%ld.tmp", path, (unsigned long)GetCurrentProcessId(), seq);
++#else
++    snprintf(tmp, sizeof tmp, "%s.%ld.%ld.tmp", path, (long)getpid(), seq);
++#endif
++
++    FILE* f = fopen(tmp, "wb");
++    if (!f) return -1;
++    shc_header h;
++    h.magic = SHC_MAGIC;
++    h.version = SHC_VERSION;
++    h.key = key;
++    h.size = size;
++    h.payload_hash = rsx_shc_hash(RSX_SHC_HASH_INIT, data, size);
++    int ok = fwrite(&h, sizeof h, 1, f) == 1 && fwrite(data, 1, size, f) == size;
++    ok = (fclose(f) == 0) && ok;
++    if (!ok) { remove(tmp); return -1; }
++#ifdef _WIN32
++    if (!MoveFileExA(tmp, path, MOVEFILE_REPLACE_EXISTING)) { DeleteFileA(tmp); return -1; }
++#else
++    if (rename(tmp, path) != 0) { remove(tmp); return -1; }
++#endif
++    shc_inc(&s_stores);
++    return 0;
++}
++
++void rsx_shc_stats(unsigned* hits, unsigned* misses, unsigned* stores)
++{
++    if (hits)   *hits   = (unsigned)s_hits;
++    if (misses) *misses = (unsigned)s_misses;
++    if (stores) *stores = (unsigned)s_stores;
++}
+diff --git a/libs/video/rsx_shader_cache.h b/libs/video/rsx_shader_cache.h
+new file mode 100644
+index 0000000..7536c0d
+--- /dev/null
++++ b/libs/video/rsx_shader_cache.h
+@@ -0,0 +1,53 @@
++/*
++ * ps3recomp - on-disk cache of compiled GPU shader blobs
++ *
++ * Backend-agnostic: the D3D12 backend stores DXBC from D3DCompile here, a
++ * Vulkan backend can store SPIR-V the same way. The key is a 64-bit hash of
++ * everything that determines the compiled output (source text, entry point,
++ * target profile, compile flags, a format version); a decompiler change
++ * produces new source text and therefore new keys, so the cache never needs
++ * manual invalidation.
++ *
++ * Each entry is one file <dir>/<key:016llx>.<ext> with a small header
++ * (magic, version, payload size, payload hash). A truncated or corrupt
++ * entry reads as a miss and is overwritten by the next store. Writes go to a
++ * temporary name first and are then renamed, so a crash mid-write never
++ * leaves a half entry under the real name.
++ *
++ * Env: RSX_SHADER_CACHE=0 disables it; RSX_SHADER_CACHE_DIR overrides the
++ * directory (default: "shadercache" next to the executable).
++ */
++#ifndef PS3RECOMP_RSX_SHADER_CACHE_H
++#define PS3RECOMP_RSX_SHADER_CACHE_H
++
++#include <stddef.h>
++#include <stdint.h>
++
++#ifdef __cplusplus
++extern "C" {
++#endif
++
++/* FNV-1a 64 over a byte range, chainable: pass the previous result as h
++ * (start with RSX_SHC_HASH_INIT). */
++#define RSX_SHC_HASH_INIT 0xcbf29ce484222325ull
++uint64_t rsx_shc_hash(uint64_t h, const void* data, size_t n);
++uint64_t rsx_shc_hash_str(uint64_t h, const char* s);   /* includes the NUL */
++
++/* 1 when the cache is usable (enabled and the directory exists or could be
++ * created). Initialises lazily on first call; thread-safe. */
++int rsx_shc_enabled(void);
++
++/* Look up a key. On a hit returns a malloc'd copy of the payload (caller
++ * frees) and its size in *out_size; on a miss returns NULL. */
++void* rsx_shc_load(uint64_t key, const char* ext, size_t* out_size);
++
++/* Store a payload under a key. Returns 0 on success. */
++int rsx_shc_store(uint64_t key, const char* ext, const void* data, size_t size);
++
++/* Counters for the [PERF] line. */
++void rsx_shc_stats(unsigned* hits, unsigned* misses, unsigned* stores);
++
++#ifdef __cplusplus
++}
++#endif
++#endif
+diff --git a/libs/video/tests/test_shader_cache.c b/libs/video/tests/test_shader_cache.c
+new file mode 100644
+index 0000000..94bb6d3
+--- /dev/null
++++ b/libs/video/tests/test_shader_cache.c
+@@ -0,0 +1,61 @@
++/*
++ * Unit test for rsx_shader_cache.c: miss, store, hit, corrupt and truncated
++ * entries read as misses, and the extension is part of the entry name.
++ *
++ *   cc -I libs/video libs/video/tests/test_shader_cache.c libs/video/rsx_shader_cache.c -lpthread
++ *   ./a.out <empty-scratch-dir>
++ */
++#include "rsx_shader_cache.h"
++
++#include <stdio.h>
++#include <stdlib.h>
++#include <string.h>
++
++#define CHECK(c) do { if (!(c)) { printf("FAIL %s:%d: %s\n", __FILE__, __LINE__, #c); return 1; } } while (0)
++
++int main(int argc, char** argv)
++{
++    const char* dir = argc > 1 ? argv[1] : "shc_test";
++#ifdef _WIN32
++    _putenv_s("RSX_SHADER_CACHE_DIR", dir);
++    const char sep = '\\';
++#else
++    setenv("RSX_SHADER_CACHE_DIR", dir, 1);
++    const char sep = '/';
++#endif
++    CHECK(rsx_shc_enabled());
++
++    uint64_t k = rsx_shc_hash_str(RSX_SHC_HASH_INIT, "float4 main() : SV_Target { return 1; }");
++    k = rsx_shc_hash_str(k, "ps_5_0");
++    size_t n = 0;
++    CHECK(rsx_shc_load(k, "dxbc", &n) == NULL);
++
++    const char blob[] = "DXBC-fake-payload-1234567890";
++    CHECK(rsx_shc_store(k, "dxbc", blob, sizeof blob) == 0);
++    void* p = rsx_shc_load(k, "dxbc", &n);
++    CHECK(p && n == sizeof blob && memcmp(p, blob, n) == 0);
++    free(p);
++
++    char path[1024];
++    snprintf(path, sizeof path, "%s%c%016llx.dxbc", dir, sep, (unsigned long long)k);
++    FILE* f = fopen(path, "r+b");
++    CHECK(f);
++    fseek(f, -3, SEEK_END); fputc('X', f); fclose(f);
++    CHECK(rsx_shc_load(k, "dxbc", &n) == NULL);          /* corrupt payload */
++
++    f = fopen(path, "wb"); CHECK(f); fwrite("RSXC", 1, 4, f); fclose(f);
++    CHECK(rsx_shc_load(k, "dxbc", &n) == NULL);          /* truncated header */
++
++    CHECK(rsx_shc_load(k, "spv", &n) == NULL);           /* other extension */
++
++    CHECK(rsx_shc_store(k, "dxbc", blob, sizeof blob) == 0);   /* overwrite repairs */
++    p = rsx_shc_load(k, "dxbc", &n);
++    CHECK(p && n == sizeof blob);
++    free(p);
++
++    unsigned h, m, s;
++    rsx_shc_stats(&h, &m, &s);
++    CHECK(h == 2 && m == 4 && s == 2);
++    printf("test_shader_cache: OK\n");
++    return 0;
++}
+-- 
+2.55.0.windows.3
+
