@@ -12,6 +12,21 @@ Avisos para outros agentes: ...
 
 ---
 
+## 2026-10-14 11:25 — claude — TELA DE TÍTULO (INLINE_ARRAY, JC_RESUME) + integração
+Resultado: **o port nativo chega à tela de título "PRESS START"** (logo texturizado correto) e continua
+fazendo flips estável (1750 flips em 172 s, sem travar). Primeiro a tela legal de copyright, depois o título.
+Correções (ps3recomp `claude/main`):
+- `rsx: NV4097_INLINE_ARRAY (0x1818)` — vértices embutidos no FIFO eram ignorados (UI 2D inteira sumia).
+- `spurs: JC_RESUME` — job chain recomeçava do início a cada Run e reexecutava jobs antigos → contadores
+  de conclusão duplicados → pool de pacotes de render (128 blocos, func 0x560FC) nunca reciclava →
+  travava após ~1300 frames. Agora retoma do END onde parou (default no port).
+Integração: trava INTEGRATION → merge `claude/main` em `src/ps3recomp` (daf6f90) e `src/allstars-ps3`
+(0405f5c) → build `build\` → smoke 170 s chega ao título (`work/runs/cap-int2`) → trava liberada.
+Defaults do port (main.cpp): SAIL_SKIP_MOVIES=1, GCM_PARK_WAIT=1, JC_RESUME=1.
+Capturas: `RSX_CAP=<frame>:<n>:<passo> RSX_CAP_DIR=<pasta>` + `scripts/bmp2png.py` (screenshots ficam em
+`docs/marcos/`, fora do git).
+Próximo (T-011): apertar START e chegar aos menus.
+
 ## 2026-10-14 10:40 — claude — T-001 (resolvida), T-002 (resolvida), T-003 (contornada)
 Fez / resultado (branches `claude/main` em agents/claude/ps3recomp e agents/claude/allstars-ps3):
 - **T-001 causa raiz:** o meu HLE de `_cellSpursLFQueuePushBody` tratava TODO push como pedido Edge;

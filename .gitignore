@@ -23,3 +23,5 @@ build-*/
 *.exe
 # estado local de coordenação
 coord/locks/
+# screenshots/capturas do jogo (saída do jogo, não versionar)
+docs/marcos/

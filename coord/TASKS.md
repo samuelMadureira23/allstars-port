@@ -8,9 +8,11 @@ Novas tarefas: próximo ID livre, no fim da tabela da área.
 ## Área A — Boot / runtime do port (sugerido: claude)
 | ID | Tarefa | Status | Dono | Caminhos principais |
 |---|---|---|---|---|
-| T-001 | Thread **Render** (tid 22) faz chamada indireta para `0x00040304` (runtime aborta: "stuck calling ... 2000 times"). **Não é função faltando:** `0x00040304` é um comando RSX (método 0x304, 1 arg) — o "objeto" lido aponta para dentro do buffer de comandos. Antes houve `bctr to NULL` em `func_0097FA18+0x150` (OPD `0x44000028` → `0x00FF0000`). `0x97FB40` é o `gcmReserve` inline: `ctx{begin@0,end@4,current@8,callback@C}`; buffer cheio → `callback`. Hipóteses: contexto GCM da thread Render corrompido/não inicializado, ou callback próprio do jogo não suportado pelo HLE (ver heurística "recycled the title's own ring", ctx=0x0F800000, ring 0x45C00000–0x46000000, em `libs/video/cellGcmSys.c` ~l.1742). Pode estar ligado a T-002. | em andamento | claude | `work/recompiled_1.00` (trava LIFT), `agents/<a>/ps3recomp/tools` |
-| T-002 | Job SPURS Edge Geometry (img 10) dá `HALT-ASSERT heqi pc=0x08DF8`: descobrir qual assert (entrada do job? DMA list? lift?) e corrigir. | livre | — | `agents/<a>/ps3recomp/runtime/spu`, `work/spu/lifted/job_edgegeom` |
-| T-003 | `cellSail`: vídeo de abertura (`movies/attract.pam`). Hoje é stub; `DescriptorCreateDatabase` não preenche o leitor PAMF. Meta mínima: o jogo pular o vídeo sem travar; depois tocar de verdade. | livre | — | `agents/<a>/ps3recomp/libs/codec/cellSail.c` |
+| T-001 | Travamento "stuck calling 0x40304" (thread Render). Causa: HLE de `_cellSpursLFQueuePushBody` tratava a fila do Renderer_SPU como Edge e corrompia memória. Corrigido (push PPU2SPU real). | concluída | claude | — |
+| T-002 | `HALT-ASSERT heqi pc=0x8DF8` no job Edge Geometry = checagem de pilha SPU (r1 word1). Corrigido em `spurs_job.c`. | concluída | claude | — |
+| T-003 | `cellSail` (vídeos). Hoje: `SAIL_SKIP_MOVIES=1` encerra o vídeo no Start (o jogo segue). Falta: decodificar PAMF/AVC de verdade (GetFrame2) e áudio dos vídeos. | livre (contornada) | — | `agents/<a>/ps3recomp/libs/codec/cellSail.c` |
+| T-011 | Passar da tela de título: apertar START (PAD_SCRIPT/PAD_FILE) e chegar aos menus; corrigir o que travar. | em andamento | claude | `agents/claude/*` |
+| T-012 | Controle real: mapear XInput/teclado no `cellPad` do port (hoje só input scriptado). | livre | — | `agents/<a>/ps3recomp/libs/input/cellPad.c` |
 | T-008 | Suporte ao EBOOT 1.12 (update + DLCs): relift, novos endereços (imagem SPU, LFQueue), validar decriptação psarc. | bloqueada (depois do 1.00 chegar ao título) | — | — |
 
 ## Área B — Recursos / assets (sugerido: astra)
