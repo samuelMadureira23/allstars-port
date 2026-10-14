@@ -12,6 +12,28 @@ Avisos para outros agentes: ...
 
 ---
 
+## 2026-10-14 10:40 — claude — T-001 (resolvida), T-002 (resolvida), T-003 (contornada)
+Fez / resultado (branches `claude/main` em agents/claude/ps3recomp e agents/claude/allstars-ps3):
+- **T-001 causa raiz:** o meu HLE de `_cellSpursLFQueuePushBody` tratava TODO push como pedido Edge;
+  a fila do `Renderer_SPU` (1024 B/elem) passava pelo mesmo NID e fazia memcpy em endereços aleatórios
+  (sobrescrevia `gCellGcmCurrentContext`) → "stuck calling 0x40304". Achado com breakpoints de hardware
+  (`PORT_DRWATCH`, DR0–DR3). Correção: roteia por tamanho de elemento; push PPU2SPU real do SDK
+  (CellSyncLFQueue, GetPushPointer/CompletePushPointer) + override de `_cellSpursLFQueueInitialize`.
+- **T-002:** `HALT-ASSERT heqi pc=0x8DF8` era checagem de estouro de pilha do SPU (r1 word1 = espaço livre);
+  `spurs_job.c` agora preenche r1 word1.
+- **FIFO:** heurísticas "jump-park"/"stuck-get" pulavam segmentos preenchidos pelo SPU (labels perdidos).
+  `GCM_PARK_WAIT=1` (default no port) espera o park ser corrigido como o RSX real.
+- **T-003:** vídeo de abertura: sem decoder, o jogo esperava o fim do stream. `SAIL_SKIP_MOVIES=1`
+  (default no port) emite PLAYER_STATE_CHANGED→OPENED logo após Start; o handler do jogo (0x16F05C) encerra o vídeo.
+- **Estado agora:** o jogo passa do vídeo, monta TODOS os .psarc (personagens/fases/bosslevel/cinematics),
+  e entra no loop do frontend **fazendo flips a ~20 fps**. Tela ainda preta: capturas (`RSX_CAP`) mostram só
+  clear + quad de pós-processo por frame.
+- **Próximo:** histograma do FIFO (`TCONST_FIFO=1`) mostra que o conteúdo é desenhado com
+  **NV4097_INLINE_ARRAY (0x1818, ~2,7 M dwords) + BEGIN_END (0x1808)** — o backend D3D12 só registra
+  DRAW_INDEX_ARRAY. Implementar INLINE_ARRAY no backend é o próximo passo para aparecer imagem.
+Ferramentas novas: `PORT_PEEK`, `PORT_WATCH`, `PORT_DRWATCH`, `PORT_FIFODUMP`, `scripts/bmp2png.py`, `sym.py --build`.
+Commits: agents/claude/ps3recomp `claude/main`, agents/claude/allstars-ps3 `claude/main` (ainda não integrados em src/).
+
 ## 2026-10-14 09:10 — claude — T-001 (em andamento, trava renovada)
 Fez: investigou o abort "stuck calling 0x00040304" do run14 (`work/run14.err.log` l.15805–16204).
 Resultado: chamada indireta da thread Render (lr `0x0050736C`, `func_00507330` → `bl 0x9BA208` →

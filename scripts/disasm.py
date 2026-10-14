@@ -28,6 +28,7 @@ def main():
         if va <= start < va + size:
             code = d[off + start - va: off + end - va]
             md = Cs(CS_ARCH_PPC, CS_MODE_64 | CS_MODE_BIG_ENDIAN)
+            md.skipdata = True   # keep going across jump tables / data words
             for ins in md.disasm(code, start):
                 print(f"{ins.address:08x}  {ins.mnemonic:8s} {ins.op_str}")
             return
