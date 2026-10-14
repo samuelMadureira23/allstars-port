@@ -43,8 +43,8 @@ EDGES = [0, 1, 2, 3, 5, 6, 7, 31, 32, 63, 64, 0x7FFF, 0x8000,
 def sha(data):
     return hashlib.sha256(data).hexdigest()
 
-def extract(out):
-    generated = ROOT / "work/recompiled_1.00"
+def extract(out, generated=None):
+    generated = generated or ROOT / "work/recompiled_1.00"
     header = (generated / "ppu_recomp.h").read_bytes()
     (out / "ppu_recomp.h").write_bytes(header)
     wanted = {a for a, _, _ in SELECTION}

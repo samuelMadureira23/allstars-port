@@ -1,5 +1,10 @@
 # Teste diferencial PPU — EBOOT 1.00 (T-007)
 
+**Atualização T-015:** correção no worktree astra validada em **67.584 casos,
+zero divergências**, usando geração isolada. O código compartilhado do port ainda
+precisa receber a integração/relift coordenada com Claude. A seção ao fim descreve
+a correção; os resultados T-007 abaixo preservam a evidência anterior.
+
 Execução de 14/10/2026, agente astra. Foram comparadas **18 funções do C gerado**
 com suas instruções PowerPC originais executadas pelo Unicorn 2.1.4.
 
@@ -117,3 +122,43 @@ Oráculo de emulação não é hardware PS3. A amostra contém funções inteira
 sem chamadas externas; usa memória sintética válida. Não cobre FPU, SIMD, SPU,
 reservas atômicas, concorrência, exceções, HLE nem o backend gráfico. Equivalência
 em entradas amostradas não prova equivalência para todas as entradas.
+
+## Correção isolada — T-015 (14/10/2026)
+
+O gerador em `agents/astra/ps3recomp/tools/ppu_lifter.py` agora inclui XER.SO
+no campo de condição escrito pelas oito variantes de comparação inteira:
+`cmpw/cmpd/cmplw/cmpld/cmpwi/cmpdi/cmplwi/cmpldi`. XER e os demais campos CR
+permanecem preservados.
+
+Validação de antes/depois com `tools/difftest/compare_so.py`:
+
+| Bateria | Antes | Depois |
+|---|---:|---:|
+| 18 funções reais, 18.432 entradas | 508 divergências | 0 |
+| 192 funções sintéticas, 49.152 entradas | 24.576 divergências | 0 |
+| Total, 67.584 entradas | 25.084 divergências | **0** |
+
+As funções sintéticas cobrem as oito variantes, CR0–CR7, imediatos
+`0/1/0x7fff/0x8000/0xffff`, todas as oito combinações SO/OV/CA, CR inicial
+zerado ou preenchido, operandos de borda e aleatórios. Encodings são verificados
+pelo decoder; as instruções PowerPC rodam no Unicorn e o C recém-gerado compila
+e roda em DLL x64. Comparam-se os mesmos registradores e memória da T-007.
+As 18 funções reais são regeneradas dos mesmos bytes ELF, sem editar a saída
+gerada manualmente. Os quatro testes independentes do oráculo continuam passando.
+
+Reprodução no worktree corrigido:
+
+```powershell
+.\.venv\Scripts\python.exe tools\difftest\compare_so.py --label fixed
+```
+
+Resultado: exit 0. Relatório em `reports/difftest-so.json`; fontes, DLL, build log
+e relatório em `analysis/difftest-so-astra/fixed/`. O relatório anterior à alteração
+está em `analysis/difftest-so-astra/baseline/report.json`, com hash do gerador antigo.
+`--label` apenas escolhe a pasta: executar `--label baseline` agora usaria o gerador
+atual, não recuperaria a versão antiga.
+
+**Integração pendente:** somente o worktree astra e saídas isoladas foram alterados.
+Não se tomou a trava LIFT, que estava com Claude, nem se alterou `work/recompiled_1.00`.
+Após merge/relift coordenados, repetir a T-007 sobre a saída compartilhada, rebuild
+e smoke de 60 segundos conforme AGENTS.md. Nenhum ganho de gameplay/boot foi medido.
