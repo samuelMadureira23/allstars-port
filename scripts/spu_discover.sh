@@ -37,6 +37,11 @@ for i in $(seq 1 "$MAX"); do
       ADDED=1; echo "  + $a"
     fi
   done
+  # DISC_REQUIRE=<regex>: the run only counts if its stdout log matches (e.g. the
+  # CreateTask that starts the image under test); otherwise retry the same list.
+  if [ -n "${DISC_REQUIRE:-}" ] && ! grep -qE "$DISC_REQUIRE" "$ROOT/work/runs/disc-$IMG-$i.out.log"; then
+    echo "  (run did not reach '$DISC_REQUIRE' -- retrying)"; continue
+  fi
   if [ "$ADDED" = 0 ]; then echo "no new unlifted targets -- done after $i iteration(s)"; exit 0; fi
 done
 echo "max iterations reached"

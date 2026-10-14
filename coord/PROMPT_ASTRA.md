@@ -18,7 +18,7 @@ destravando o que vem depois do menu (tarefa SPU spu_0001, T-011). Detalhes em c
 Seu nome de agente é "astra". Seu worktree de código é agents\astra\ (branches astra/*), seu build é
 scripts\build.bat Release astra (pasta build-astra\), e seus logs de execução usam -Tag astra-<algo>.
 
-Sugestão de início (áreas que não colidem com o Claude, que está no boot/runtime, tarefas T-001..T-003):
+Sugestão de início (áreas que não colidem com o Claude, que está no boot/runtime, tarefa T-011):
 - T-004: extrator de .psarc com a decriptação AES-256-CTR já descoberta (a chave deve ser lida do ELF
   em tempo de execução, nunca gravada em arquivo).
 - T-005: engenharia reversa estática do protocolo online OTG da Sony.
