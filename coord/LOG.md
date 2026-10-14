@@ -12,6 +12,18 @@ Avisos para outros agentes: ...
 
 ---
 
+## 2026-10-14 09:10 — claude — T-001 (em andamento, trava renovada)
+Fez: investigou o abort "stuck calling 0x00040304" do run14 (`work/run14.err.log` l.15805–16204).
+Resultado: chamada indireta da thread Render (lr `0x0050736C`, `func_00507330` → `bl 0x9BA208` →
+stub TOC → `func_0097F068`). `0x00040304` é palavra de comando RSX, não código; antes houve
+`bctr to NULL` em `func_0097FA18+0x150` com OPD `0x44000028`. `0x97FB40..` = gcmReserve inline
+(`lwz current,8(ctx)`, `lwz end,4(ctx)`, estouro → `callback` em +0xC). Conclusão provisória
+(inferência): o contexto GCM usado pela thread Render não é válido quando o buffer enche.
+Próximo passo: descobrir de onde vem o ctx de `func_0097FA18`/`0x97FB40` (r3) — instrumentar
+`hle_gcm_callback`/`cellGcm_fifo_recycle` e logar ctx/callback de cada contexto que o jogo cria;
+comparar com o fluxo no RPCS3.
+Commits: nenhum código novo nesta etapa.
+
 ## 2026-10-14 08:55 — claude — coordenação
 Fez: criou `AGENTS.md`, `CLAUDE.md`, `coord/TASKS.md`, este LOG, `scripts/claim.py` (travas atômicas),
 worktrees `agents/claude/*` e `agents/astra/*` (branches `<agente>/main` a partir de `allstars-port`);
