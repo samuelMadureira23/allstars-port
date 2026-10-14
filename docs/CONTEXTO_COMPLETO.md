@@ -108,7 +108,18 @@ completo do PPU com a trava LIFT e rebuild — e depois rodar 60 s sem regressã
 **Funciona:** boot → aviso legal → título "PRESS START" → START → menu principal com diálogo do tutorial
 ("Would you like to go to the Tutorial?"). Sem áudio audível, input só scriptado, cores do texto do menu erradas.
 
-**Bloqueio atual — T-017 (intermitente):** a tarefa SPURS da spu_0001 (entry 0xB71480) é criada aos pares pelo
+**ATUALIZAÇÃO (fim da tarde) — causa da T-017 encontrada:** não é corrida. Na execução `claude-rep3` o handle
+parou em 2: a tarefa fez o 1º incremento (lr 0x2CB34) e depois chamou um método virtual em **0x4DC0**, função SPU
+não liftada (o ponteiro vem do objeto "owner" na memória PPU, por isso nenhum scan estático da imagem acha). O
+runtime caiu na heurística LBP `[wws-jobentry]` → `BRANCH-TO-0 unresolved` e a tarefa abortou sem o incremento final
+(lr 0x2CCDC). Também falta **0x5050**. A intermitência vem do estado do menu (qual método é chamado). Correção em
+curso: os dois adicionados a `work/spu/spu_0001_at_00B61480_extra.txt` e `scripts/spu_discover.sh` rodando
+(log `work/runs/spu_discover3.log`; trava LIFT com claude). Regra prática: **sempre** grep
+`BRANCH-TO-0 unresolved\|wws-jobentry\] pc` no err.log antes de suspeitar de concorrência. O protocolo da tarefa é:
+PPU marca handle=1 (via 0x579F0/0x57E58) e cria a tarefa; a tarefa incrementa o handle no início (→2) e no fim (→3)
+e incrementa o contador de conclusão do pool em 0x4001D518 (pool de 2 tasksets 0x40017100/0x40018A00).
+
+**Bloqueio anterior — T-017 (intermitente), análise original:** a tarefa SPURS da spu_0001 (entry 0xB71480) é criada aos pares pelo
 PPU com argumento `{owner, cmd, handle, x}` (cmd 0/4/5/6...; `handle` = palavra de estado; o PPU espera ela chegar a 3).
 - Execuções boas: centenas de tarefas, todas retornam, aparecem comandos novos (cmd=6 com 1.0f) = o menu avança.
 - Execuções ruins: uma tarefa retorna mas o handle fica em 1 (claude-long1: só 3 tarefas, para aos 97 s), ou 2
