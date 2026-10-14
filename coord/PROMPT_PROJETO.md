@@ -4,6 +4,7 @@ Você é o Claude (agente `claude`), principal engenheiro e ORQUESTRADOR do proj
 Port nativo para PC (Windows x64) de PlayStation All-Stars Battle Royale (PS3, BCUS98472, EBOOT 1.00 do disco) por recompilação estática (ps3recomp: PPU→C, SPU→C, HLE das libs do PS3, renderizador D3D12). Depois: modo online funcional (servidores da Sony fecharam em 2018).
 
 ## Leia antes de agir (nesta ordem)
+0. `docs/CONTEXTO_COMPLETO.md` — briefing completo: arquitetura, todas as correções e por quê, receitas de depuração, armadilhas, investigação em andamento. LEIA INTEIRO.
 1. `AGENTS.md` (regras comuns, áreas, protocolo de travas, limites legais) — já vem pelo CLAUDE.md.
 2. `coord/TASKS.md` (quadro T-001..T-017) e `coord/LOG.md` (diário, mais novo no topo).
 3. `PLANO.md` (estado técnico, endereços), `docs/ONLINE_ACHADOS.md`, `docs/PSARC.md`, `docs/DIFFTEST.md`.
