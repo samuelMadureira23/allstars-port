@@ -110,5 +110,16 @@
 - Ghidra: `pes 13 descompilado\ferramentas\ghidra\ghidra_12.1.4_PUBLIC` com `JAVA_HOME=...\ferramentas\jdk21`
 - REA não suporta PowerPC → análise do PPU via Ghidra direto
 
+### Recursos PSARC — T-004 concluída (astra, 14/10/2026)
+- Extrator offline em `tools/psarc_extract.py`, documentação em `docs/PSARC.md`.
+- Perfil fixado pelo SHA-256 do ELF de disco 1.00; chave/prefixo lidos dos segmentos PPU/SPU somente em memória.
+- 48 pacotes, 33.552 entradas e 3.691.348.922 bytes de recursos verificados, sem erros. Índice com nomes em
+  `reports/psarc-index.json`; hashes por arquivo em `reports/psarc-validation.json`.
+- Detalhe adicional confirmado: após raw deflate, os blocos decifrados têm trailer Adler-32 de 4 bytes;
+  o extrator confere esse checksum (82.455 blocos comprimidos + 25 crus; manifests contados à parte).
+- `global.psarc`: manifest 2403 bytes/70 nomes; extração em `analysis/psarc-astra/global` (70 arquivos,
+  25.610.876 bytes), tamanhos e SHA-256 conferidos após escrita. 16 testes automatizados passaram.
+- Sem alterações no runtime/boot e sem validação de formatos internos dos recursos. Perfil 1.12 não suportado.
+
 ## Regras do projeto
 - Não versionar/distribuir EBOOT, ELF decriptado, `.psarc` nem chaves — o usuário fornece a própria cópia.
