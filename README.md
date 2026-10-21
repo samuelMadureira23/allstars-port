@@ -18,7 +18,7 @@ O port é gerado no computador do usuário a partir da cópia dele do jogo. Este
 - No computador de testes (Ryzen 7 7700 e RTX 5070), as lutas de dois jogadores mantêm 60 fps com resolução interna de até 3x, FXAA e filtro anisotrópico. As lutas de quatro jogadores ficam próximas de 50 fps. O desempenho em computadores mais modestos ainda está em medição.
 - DualShock 4, DualSense, controles Xbox e genéricos, inclusive vários conectados ao mesmo tempo, além de teclado.
 - Pré-compilação de shaders antes da partida, que reduz as travadas iniciais.
-- Partidas em rede local, ou pela internet com Radmin VPN, usando o netcode do próprio jogo.
+- Partidas em rede local, usando o netcode do próprio jogo.
 
 ## Requisitos
 
