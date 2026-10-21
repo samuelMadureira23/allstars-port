@@ -18,7 +18,7 @@ The port is generated on the user's computer from the user's own copy of the gam
 - On the test computer (Ryzen 7 7700 and RTX 5070), two-player battles hold 60 fps with internal resolution up to 3x, FXAA and anisotropic filtering. Four-player battles run close to 50 fps. Performance on more modest computers is still being measured.
 - DualShock 4, DualSense, Xbox and generic controllers, including several connected at the same time, plus the keyboard.
 - Shader pre-compilation before a match, which reduces the initial hitches.
-- Local network matches, or over the internet through Radmin VPN, using the game's own netcode.
+- Local network matches using the game's own netcode.
 
 ## Requirements
 
