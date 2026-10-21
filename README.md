@@ -1,121 +1,74 @@
-# All star port
+# PlayStation All-Stars Battle Royale: port nativo para PC (Windows)
 
-> **Agentes de IA: comecem por [AGENTS.md](AGENTS.md)** (regras, áreas e coordenação),
-> depois `coord/TASKS.md`, `coord/LOG.md` e `PLANO.md`. O texto abaixo descreve a etapa
-> inicial (manhã de 14/10/2026); desde então o port recompilado já compila e o boot chega ao
-> loop principal do jogo — estado atual em `PLANO.md`.
+**English:** [README in English](docs/README_GITHUB_EN.md)
 
-Projeto iniciado em 14/10/2026 para investigar um port nativo de PlayStation
-All-Stars Battle Royale para PC, seguido de modo online.
+Port nativo para Windows x64 de PlayStation All-Stars Battle Royale (BCUS98472), feito por recompilação estática a partir do fork do [ps3recomp](https://github.com/sp00nznet/ps3recomp). Usa Direct3D 12 e não depende de emulador para executar.
 
-**Estado: engenharia reversa inicial. Não existe port jogável nesta pasta.**
+**Comunidade:** Discord do ps3recomp, servidor sp00nznet recomp (https://discord.gg/CRpzGWZFcu), usuário `@samukambr`.
 
-## Avanço da segunda etapa
+## Sobre o projeto
 
-Foi executada uma primeira função traduzida manualmente em uma DLL nativa x64.
-Os 10.015 casos comparados com o oráculo PPC64 passaram para r3, r5 e os campos
-selecionados de XER. Escopo e reprodução em [docs/NATIVE_PROOF.md](docs/NATIVE_PROOF.md).
+O jogo original foi compilado para o processador Cell do PlayStation 3. Este projeto traduz o código do processador principal (PPU) e das unidades sinérgicas (SPU) para C, compila esse código junto com uma camada que substitui as bibliotecas do console e encaminha os comandos gráficos para o Direct3D 12. O resultado é um executável nativo, sem emulação de instruções em tempo de execução.
 
-| Observação estática | Versão 1.00 | Versão 1.12 |
-| --- | ---: | ---: |
-| Descritores OPD | 16.989 | 17.176 |
-| Entradas de código distintas na OPD | 12.775 | 12.924 |
-| Imports de firmware | 376 | 378 |
-| Bibliotecas importadas | 25 | 26 |
-| Imports nomeados por banco NID | 345 | 350 |
-| Imagens SPU extraídas e estruturalmente validadas | 3 | 3 |
+O port é gerado no computador do usuário a partir da cópia dele do jogo. Este repositório não contém EBOOT, código gerado, executável do port, arquivos .psarc, texturas, áudio, vídeo, firmware ou saves. É necessário ter a própria cópia do disco BCUS98472, versão 1.00.
 
-As duas versões têm dois contextos TOC. As entradas OPD foram conferidas contra
-bytes, alinhamento, seções executáveis e memória carregada. Não são uma contagem
-exaustiva de funções. Os endereços finais estimados pelo loader não são limites
-de função comprovados. Resultados em `reports/stage2.json` e `analysis/audit-*`.
+## O que funciona
 
-Ferramenta de leitura: ps3recomp, commit
-`a2c20108af45174dbb7d3e2f87f6acaaef09c6b4`, preservado em `tools/ps3recomp`.
-As análises PPU ficam em `analysis/ppu-1.00` e `analysis/ppu-1.12`.
-O runtime completo dessa ferramenta ainda não foi compilado ou validado.
+- Menus, seleção de personagens, lutas com até quatro lutadores, cenários e efeitos.
+- No computador de testes (Ryzen 7 7700 e RTX 5070), as lutas de dois jogadores mantêm 60 fps com resolução interna de até 3x, FXAA e filtro anisotrópico. As lutas de quatro jogadores ficam próximas de 50 fps. O desempenho em computadores mais modestos ainda está em medição.
+- DualShock 4, DualSense, controles Xbox e genéricos, inclusive vários conectados ao mesmo tempo, além de teclado.
+- Pré-compilação de shaders antes da partida, que reduz as travadas iniciais.
+- Partidas em rede local, ou pela internet com Radmin VPN, usando o netcode do próprio jogo.
 
-## Resultados verificados
+## Requisitos
 
-- Inventário do disco BCUS98472 1.00: 23.933 arquivos, 6.308.711.424 bytes.
-- 48 PSARC, com 33.552 entradas de recursos nas tabelas. Os manifests não foram
-  decodificados pelo perfil zlib comum; nomes e conteúdos permanecem desconhecidos.
-- Encontrada atualização BCUS98472 1.12 na instalação local do RPCS3.
-- ELF das duas versões obtido usando RPCS3 isolado, sem executar o jogo.
-  Hash dos EBOOT originais conferido antes/depois: arquivos preservados.
-- REA registrado no Codex; `rea doctor --client codex --json` retornou healthy=true.
-  Ghidra 12.1.4 e JDK 21 já estavam instalados e foram reutilizados.
-- O REA instalado rejeitou SELF e depois ELF PowerPC. Isso é uma limitação do
-  caminho de importação do REA, não evidência de que Ghidra não suporte PowerPC.
-- Ghidra direto reconheceu 1.233 funções na cópia de análise 1.00 e exportou três
-  amostras de pseudocódigo. Não é cobertura completa nem código pronto para compilar.
-- Detectadas três imagens ELF32 big-endian, machine=23 (SPU), embutidas em cada
-  ELF. Segmentos, limites de arquivo e local store foram validados; execução e
-  cobertura completa de tarefas SPU ainda não verificadas.
+- Windows 10 ou 11, 64 bits, com placa de vídeo compatível com Direct3D 12.
+- Cópia própria de PlayStation All-Stars Battle Royale em disco, BCUS98472, versão 1.00. O EBOOT.BIN é conferido por SHA-256.
+- RPCS3 apenas para decriptar o EBOOT.BIN, pela opção Utilities, Decrypt PS3 Binaries.
+- Para compilar o port: Python 3 com Tcl/Tk, Visual Studio Build Tools com suporte a C++, LLVM com clang-cl, CMake e Ninja. O Launcher informa o que estiver faltando e não baixa nem instala nada.
 
-## Arquivos principais
+## Como jogar
 
-| Caminho relativo | Conteúdo |
-| --- | --- |
-| `docs/ROADMAP.md` | Critérios de avanço, fontes e limites |
-| `reports/inventory.json` | Inventário e PARAM.SFO do disco |
-| `reports/psarc-index.json` | Tabelas de recursos e falhas de leitura do manifest |
-| `reports/elf-base-1.00.json` | Segmentos, seções e candidatos ELF embutidos |
-| `reports/elf-update-1.12.json` | Relatório separado da atualização |
-| `reports/rea-doctor-after.json` | Diagnóstico após configuração |
-| `reports/rea-elf-overview.json` | Rejeição de arquitetura pelo REA |
-| `analysis/base-1.00-isolated/EBOOT.elf` | ELF original obtido pelo RPCS3 |
-| `analysis/update-1.12/EBOOT.elf` | ELF da atualização local |
-| `analysis/base-1.00-isolated/provenance.json` | Origem e preservação do EBOOT |
-| `analysis/base-1.00-isolated/EBOOT.analysis.elf` | Derivado somente para análise |
-| `analysis/base-1.00-isolated/functions.tsv` | Funções reconhecidas pelo Ghidra |
-| `analysis/base-1.00-isolated/sample-pseudocode.c` | Três amostras, não compiláveis como port |
-| `analysis/allstars-ppu-100.gpr` | Projeto Ghidra persistido |
+1. Abra **Open Launcher.exe**.
+2. Na aba Início, selecione a pasta do jogo, aquela que contém PS3_GAME.
+3. Na aba Preparar, siga os passos na ordem: conferir o jogo, decriptar com o RPCS3, conferir o ELF, verificar as ferramentas, gerar e compilar o port e conferir o executável. A geração e a compilação levam dezenas de minutos.
+4. Opcional: para usar o update 1.12 e os conteúdos adicionais, antes de gerar e compilar, use os botões 7 e 8 da aba Preparar. O botão 7 pede a pasta do update, por exemplo dev_hdd0/game/BCUS98472 do RPCS3. O botão 8 confere o EBOOT.BIN decriptado do update. O passo de geração passa a produzir as versões 1.00 e 1.12, e o jogo abre na 1.12. O update e os conteúdos adicionais são os do usuário, instalados no RPCS3 dele.
+5. Clique em Jogar. Na primeira partida, o Launcher compila os shaders do jogo e mostra o progresso.
 
-## Importação no Ghidra
+O guia detalhado, para quem não é técnico, está em [docs/COMO_JOGAR_COM_AMIGO.md](docs/COMO_JOGAR_COM_AMIGO.md).
 
-A saída ELF do RPCS3 contém tabela de nomes de seções zerada. A primeira importação
-genérica ficou na criação de segmentos e foi interrompida. Para a análise válida,
-foi criada uma cópia com somente os campos de seção do cabeçalho ELF zerados,
-preservando os segmentos. A transformação e os hashes estão em
-`EBOOT.analysis.provenance.json`. A cópia serve para análise, não para execução.
+## Estado
 
-O Ghidra foi explicitamente configurado como `PowerPC:BE:64:default`; ABI, TOC,
-descritores de função e imports do PS3 ainda precisam de validação. Os resultados
-estão em `reports/ghidra-ppu-console.txt` e `ghidra-summary.txt`.
+Projeto em andamento. A versão 1.00 do disco é a base; o update 1.12, com os conteúdos adicionais, é suportado por cima dela. A versão apenas digital, sem o disco, ainda não é suportada.
 
-## Ferramentas reexecutáveis
+O alvo mínimo de computador está definido: processador Xeon E5-2680 v4 e placa AMD RX 580 de 8 GB ou NVIDIA GTX 1660 de 6 GB, com 60 fps em 1080p e resolução interna de 1x a 1,5x. Esse alvo ainda está em medição.
 
-Os scripts de inventário usam somente a biblioteca padrão. A prova nativa usa
-Unicorn 2.1.4, instalado no ambiente `.venv` do projeto, e MSVC já existente.
-Execute a partir desta pasta:
+## Problemas conhecidos
 
-```powershell
-python tools/inventory.py '<pasta do jogo com PS3_GAME>' reports/inventory.json
-python tools/psarc_index.py '<pasta USRDIR>' reports/psarc-index.json
-python tools/prepare_elf.py '<EBOOT.BIN>' 'tools/rpcs3-analysis/rpcs3.exe' 'analysis/nova-versao'
-python tools/elf_report.py 'analysis/nova-versao/EBOOT.elf' reports/nova-versao.json
-python tools/normalize_elf.py 'analysis/nova-versao/EBOOT.elf' 'analysis/nova-versao/EBOOT.analysis.elf'
-python tools/audit_ps3.py reports/elf-base-1.00.json analysis/audit-1.00
-python tools/stage2_report.py
-python -m unittest discover -s tools -p 'test_*.py'
-```
+- Travadas curtas na primeira vez que um efeito ou cenário aparece, enquanto os shaders correspondentes são compilados. A pré-compilação reduz esse efeito, mas ainda restam algumas ocorrências na primeira luta de cada fase.
+- Falhas visuais pontuais em casos específicos, como alguns efeitos de partículas e a intro de determinados cenários.
+- O modo online fora da rede local ainda não está disponível.
 
-`prepare_elf.py` exige diretório novo e só executa o comando de descriptografia.
-O RPCS3 utilizado é uma cópia local isolada de exe/DLLs, sem seus saves ou contas.
-A primeira tentativa na instalação em uso expirou após 90 segundos; a cópia
-isolada resolveu. `analysis/base-1.00` conserva apenas essa tentativa inicial.
+## Guias
 
-O registro do REA está em `C:\Users\samue\.codex\config.toml`, com backup
-`C:\Users\samue\.codex\config.toml.rea.backup`. Reiniciar/reconectar o Codex
-podia ser necessário para que os novos tools MCP aparecessem; eles ficaram
-disponíveis na continuação desta sessão. A limitação PowerPC
-continuará exigindo o caminho direto do Ghidra até haver suporte no REA.
+- [Como jogar com um amigo](docs/COMO_JOGAR_COM_AMIGO.md)
+- [Problemas comuns](docs/PROBLEMAS_COMUNS.md)
+- [Como jogar online pela rede local](docs/COMO_JOGAR_ONLINE_F3.md)
 
-## Próximo marco
+## Feedback
 
-Enriquecer o Ghidra com OPD/imports e testar uma função com memória e TOC,
-seguida da geração automática de código. Depois avaliar runtime PPU/SPU, RSX,
-áudio e entrada antes de perseguir menu e combate local. Online é uma etapa
-posterior; há também o projeto comunitário All-Stars Matchmaker, ainda anunciado
-como Coming Soon na consulta realizada. Fontes no ROADMAP.
+A comunidade do ps3recomp fica no Discord deles (servidor sp00nznet recomp), onde o desenvolvimento do runtime acontece: https://discord.gg/CRpzGWZFcu. Lá, procure por `@samukambr`. Para relatos que devam ficar registrados, use as Discussions ou as Issues do repositório. Não envie EBOOT, .psarc, chaves, firmware ou qualquer arquivo do jogo; descreva o problema e anexe apenas o log `user\logs\last_run.log`, revisado antes.
+
+## Créditos e licença
+
+- Base: [ps3recomp](https://github.com/sp00nznet/ps3recomp), licença MIT, de Ned Heller (sp00nznet) e colaboradores. A licença original está em src/ps3recomp/LICENSE.
+- O [RPCS3](https://rpcs3.net) foi usado como referência de comportamento.
+- PlayStation All-Stars Battle Royale é marca e propriedade da Sony Interactive Entertainment. Este projeto não é afiliado à Sony e não distribui conteúdo do jogo.
+
+## Aviso legal
+
+Este repositório não distribui o jogo nem qualquer arquivo extraído dele. Para usar o port, é necessário possuir uma cópia legítima do disco e obter o EBOOT.BIN a partir dela. O projeto não é afiliado à Sony Interactive Entertainment e não tem como objetivo permitir o uso do jogo por quem não o possui.
+
+## Desenvolvimento
+
+A documentação de engenharia, o diário de coordenação e as regras de contribuição ficam em [docs/ENGINEERING.md](docs/ENGINEERING.md), [AGENTS.md](AGENTS.md), [coord/TASKS.md](coord/TASKS.md) e [PLANO.md](PLANO.md).
