@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Community Discord (ps3recomp)
+    url: https://discord.gg/CRpzGWZFcu
+    about: Ask questions and talk to the maintainer. Look for @samukambr.
+  - name: Common problems
+    url: https://github.com/samuelMadureira23/allstars-port/blob/master/docs/PROBLEMAS_COMUNS.md
+    about: Check this before opening an issue.
