@@ -15,7 +15,7 @@ The port is generated on the user's computer from the user's own copy of the gam
 ## What works
 
 - Menus, character selection, battles with up to four fighters, stages and effects.
-- On the test computer (Ryzen 7 7700 and RTX 5070), four-player battles hold 60 fps with internal resolution up to 3x, FXAA and anisotropic filtering. Performance on more modest computers is still being measured.
+- On the test computer (Ryzen 7 7700 and RTX 5070), two-player battles hold 60 fps with internal resolution up to 3x, FXAA and anisotropic filtering. Four-player battles run close to 50 fps. Performance on more modest computers is still being measured.
 - DualShock 4, DualSense, Xbox and generic controllers, including several connected at the same time, plus the keyboard.
 - Shader pre-compilation before a match, which reduces the initial hitches.
 - Local network matches using the game's own netcode.
@@ -60,6 +60,12 @@ Work in progress. Version 1.00 of the disc is the base; the 1.12 update, with th
 Report bugs through GitHub Issues or contact `samukambr` on Discord. Include the game version, your hardware, the build and steps to reproduce the problem. The [ps3recomp Discord](https://discord.gg/CRpzGWZFcu) is also available for community discussion.
 
 Review logs before sharing them: remove personal paths, IP addresses and account details. Do not attach game files, firmware or keys.
+
+## Support
+
+If you want to support the project, you can use Ko-fi: [![ko-fi](https://ko-fi.com/img/githubbutton_sm.svg)](https://ko-fi.com/I2Q22990Y8).
+
+Donations support the development of the port. They do not include the game, the port executable or any game content; the port is still built from your own disc.
 
 ## Credits and license
 
