@@ -1,5 +1,5 @@
 From 79e0b36cc8a88792e3740c98fc4a529bc82bee26 Mon Sep 17 00:00:00 2001
-From: samuel <samuel.madureira23@gmail.com>
+From: samuel <samuelMadureira23@users.noreply.github.com>
 Date: Wed, 14 Oct 2026 14:33:41 -0300
 Subject: [PATCH 12/14] gpu: constantes do FP por draw em b1 (decompilador
  buffered); cores do menu (T-013)

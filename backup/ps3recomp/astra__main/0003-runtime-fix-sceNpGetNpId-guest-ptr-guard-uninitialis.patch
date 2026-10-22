@@ -1,5 +1,5 @@
 From 5203765080bb2167b2d564c401cef18acf795b36 Mon Sep 17 00:00:00 2001
-From: samuel <samuel.madureira23@gmail.com>
+From: samuel <samuelMadureira23@users.noreply.github.com>
 Date: Wed, 14 Oct 2026 08:46:20 -0300
 Subject: [PATCH 3/8] runtime: fix sceNpGetNpId guest ptr, guard uninitialised
  PAMF readers, forget dead SPU ctxs in lock-line registry

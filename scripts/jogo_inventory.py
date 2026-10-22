@@ -15,10 +15,9 @@ import struct
 import sys
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-DOCS = os.path.dirname(ROOT)
-GAME = os.path.join(DOCS, "[Downloadgameps3.com]PLUS", "BCUS98472 - [Play Station All Stars Battle Royale]")
-PKGS = os.path.join(DOCS, "[Downloadgameps3.com]PLUS")
-RPCS3_UPD = os.path.join(DOCS, "rpcs3-v0.0.28-15372-38a5313e_win64", "dev_hdd0", "game", "BCUS98472")
+GAME = os.environ.get("PS3_GAME_ROOT", "")
+PKGS = os.environ.get("PS3_PACKAGES_ROOT", "")
+RPCS3_UPD = os.environ.get("PS3_UPDATE_ROOT", "")
 ELFS = {
     "1.00": os.path.join(ROOT, "work", "eboot", "EBOOT_1.00_disc.elf"),
     "1.12": os.path.join(ROOT, "work", "eboot", "EBOOT_1.12_update.elf"),
@@ -335,6 +334,9 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--out", default=os.path.join(ROOT, "analysis", "jogo"))
     a = ap.parse_args()
+    for name, path in (("PS3_GAME_ROOT", GAME), ("PS3_PACKAGES_ROOT", PKGS), ("PS3_UPDATE_ROOT", RPCS3_UPD)):
+        if not path or not os.path.isdir(path):
+            ap.error(f"Set {name} to an existing directory containing your own game files.")
     os.makedirs(a.out, exist_ok=True)
     from nid_database import get_default_db, NIDDatabase
     db = get_default_db()

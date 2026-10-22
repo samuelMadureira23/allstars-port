@@ -1,5 +1,5 @@
 From b5fe3336611a5fd9bdcd2862e57a7c164aa5f97a Mon Sep 17 00:00:00 2001
-From: samuel <samuel.madureira23@gmail.com>
+From: samuel <samuelMadureira23@users.noreply.github.com>
 Date: Wed, 14 Oct 2026 14:25:38 -0300
 Subject: [PATCH 11/12] gpu: resolucao interna RSX_RES_SCALE no decompilador de
  FP (WPOS dividido pela escala) (T-021)

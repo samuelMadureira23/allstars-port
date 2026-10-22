@@ -1,5 +1,5 @@
 From 4a5b1f171198c4ce2bcc79a845cada2f83995a29 Mon Sep 17 00:00:00 2001
-From: samuel <samuel.madureira23@gmail.com>
+From: samuel <samuelMadureira23@users.noreply.github.com>
 Date: Wed, 14 Oct 2026 14:00:44 -0300
 Subject: [PATCH 10/14] gpu: present sem bloquear o drain, relogio de vblank
  QPC, cache de shaders em disco (T-021)

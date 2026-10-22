@@ -1,5 +1,5 @@
 From dc0d9d2e0c53bb75410c6fcb9e9d108af458b5a3 Mon Sep 17 00:00:00 2001
-From: samuel <samuel.madureira23@gmail.com>
+From: samuel <samuelMadureira23@users.noreply.github.com>
 Date: Wed, 14 Oct 2026 10:21:09 -0300
 Subject: [PATCH 7/9] spurs: JC_RESUME -- resume job chains from the END they
  stopped on

@@ -1,5 +1,5 @@
 From 1f464141c960ca09aaf5e38e0eb8adf70d4d09ea Mon Sep 17 00:00:00 2001
-From: samuel <samuel.madureira23@gmail.com>
+From: samuel <samuelMadureira23@users.noreply.github.com>
 Date: Wed, 14 Oct 2026 08:27:03 -0300
 Subject: [PATCH 02/12] diag: ppu_debug_dump_guest_stacks + publish main ctx
  (g_ppu_main_ctx)

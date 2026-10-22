@@ -1,5 +1,5 @@
 From f34e54388d6586c0ddd606c2991dd15ab0b0ef85 Mon Sep 17 00:00:00 2001
-From: samuel <samuel.madureira23@gmail.com>
+From: samuel <samuelMadureira23@users.noreply.github.com>
 Date: Wed, 14 Oct 2026 08:18:43 -0300
 Subject: [PATCH 1/8] allstars: apply ColinGamez/allstars-ps3 runtime patch +
  fix sys_lwcond_t layout

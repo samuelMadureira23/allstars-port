@@ -1,5 +1,5 @@
 From fdffa4a3e46bfdb5eb8d677dad4575656ff1ac0b Mon Sep 17 00:00:00 2001
-From: samuel <samuel.madureira23@gmail.com>
+From: samuel <samuelMadureira23@users.noreply.github.com>
 Date: Wed, 14 Oct 2026 13:47:33 -0300
 Subject: [PATCH 10/10] audio: WASAPI autoconvert + device-paced mixer; wwsjob
  PM image id configurable; cellPad configurable fighting keymap

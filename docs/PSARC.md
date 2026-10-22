@@ -52,10 +52,10 @@ do jogo. Não houve download, instalação, rede ou alteração de EBOOT/runtime
 
 ## Uso
 
-Execute na raiz `C:\Users\samue\Documents\All star port`, usando o ambiente existente:
+Execute na raiz `C:\Projects\allstars-port`, usando o ambiente existente:
 
 ```powershell
-$usrdir = 'C:\Users\samue\Documents\[Downloadgameps3.com]PLUS\BCUS98472 - [Play Station All Stars Battle Royale]\PS3_GAME\USRDIR'
+$usrdir = 'C:\Games\BCUS98472\PS3_GAME\USRDIR'
 
 # Listar nomes e metadados; não extrai os recursos.
 .\.venv\Scripts\python.exe tools\psarc_extract.py index $usrdir --elf work\eboot\EBOOT_1.00_disc.elf --report reports\psarc-index.json

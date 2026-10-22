@@ -15,7 +15,7 @@ não mede progresso do port nem comprova gameplay, SPU, gráficos ou online.
 
 ## Reprodução
 
-Na raiz `C:\Users\samue\Documents\All star port`:
+Na raiz `C:\Projects\allstars-port`:
 
 ```powershell
 .\.venv\Scripts\python.exe tools\difftest\run.py --cases 1024

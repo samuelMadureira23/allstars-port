@@ -1,5 +1,5 @@
 From 5b3ce96a64195e82f8be4adb580a80efa55916e3 Mon Sep 17 00:00:00 2001
-From: samuel <samuel.madureira23@gmail.com>
+From: samuel <samuelMadureira23@users.noreply.github.com>
 Date: Wed, 14 Oct 2026 13:34:52 -0300
 Subject: [PATCH 09/14] spu: SPU_ATOM_IMG filters the SPU_ATOMTRACE log to one
  image, logs pc/lr

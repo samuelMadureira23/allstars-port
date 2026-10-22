@@ -26,7 +26,7 @@ UPSTREAM_BASE = "39e4f49286447b3ae3dcc2358700c840860ee677"
 BAD = re.compile(r"(\.(elf|self|bin|psarc|xvag|pam|at3|sfo|pkg|sprx|trp|edat|sdat|rap|bmp)$|"
                  r"(^|/)work/|ppu_recomp_\d+|spu_recomp\.[ch]$|(^|/)fw_spu/|(^|/)eboot)", re.I)
 MAX_BYTES = 2 * 1024 * 1024
-GIT_ID = ["-c", "user.name=samuel", "-c", "user.email=samuel.madureira23@gmail.com"]
+GIT_ID = []  # Use the repository's configured Git identity; never hard-code a personal email.
 
 
 def run(cmd, cwd=ROOT, check=True, capture=True):

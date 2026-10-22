@@ -4,7 +4,7 @@
 
 Port nativo para Windows x64 de PlayStation All-Stars Battle Royale (BCUS98472), feito por recompilação estática a partir do fork do [ps3recomp](https://github.com/sp00nznet/ps3recomp). Usa Direct3D 12 e não depende de emulador para executar.
 
-**Comunidade:** Discord do ps3recomp, servidor sp00nznet recomp (https://discord.gg/CRpzGWZFcu), usuário `@samukambr`.
+**Relatos de bugs:** Discord `samukambr` ou Issues deste repositório.
 
 ## Sobre o projeto
 
@@ -28,6 +28,8 @@ O port é gerado no computador do usuário a partir da cópia dele do jogo. Este
 - Para compilar o port: Python 3 com Tcl/Tk, Visual Studio Build Tools com suporte a C++, LLVM com clang-cl, CMake e Ninja. O Launcher informa o que estiver faltando e não baixa nem instala nada.
 
 ## Como jogar
+
+Este repositório reúne fontes de desenvolvimento, patches e documentação. Ainda não há um pacote publicado em Releases. Os passos abaixo descrevem o pacote de desenvolvimento; clonar apenas este repositório não fornece o runtime nem o Launcher completos.
 
 1. Abra **Open Launcher.exe**.
 2. Na aba Início, selecione a pasta do jogo, aquela que contém PS3_GAME.
@@ -57,7 +59,9 @@ O alvo mínimo de computador está definido: processador Xeon E5-2680 v4 e placa
 
 ## Feedback
 
-A comunidade do ps3recomp fica no Discord deles (servidor sp00nznet recomp), onde o desenvolvimento do runtime acontece: https://discord.gg/CRpzGWZFcu. Lá, procure por `@samukambr`. Para relatos que devam ficar registrados, use as Discussions ou as Issues do repositório. Não envie EBOOT, .psarc, chaves, firmware ou qualquer arquivo do jogo; descreva o problema e anexe apenas o log `user\logs\last_run.log`, revisado antes.
+Para relatar bugs, abra uma Issue ou entre em contato no Discord: `samukambr`. Informe a versão do jogo, seu hardware, o build e os passos para reproduzir o problema. A comunidade também conversa no [Discord do ps3recomp](https://discord.gg/CRpzGWZFcu).
+
+Revise o log antes de enviar: remova caminhos pessoais, endereços IP e dados de conta. Não anexe arquivos do jogo, firmware ou chaves.
 
 ## Créditos e licença
 

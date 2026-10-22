@@ -7,12 +7,13 @@ import subprocess
 import sys
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-TOOLS = r"C:\Users\samue\Documents\pes 13 descompilado\ferramentas"
-GHIDRA = os.path.join(TOOLS, "ghidra", "ghidra_12.1.4_PUBLIC")
+GHIDRA = os.environ.get("GHIDRA_HOME", "")
 
 
 def main():
-    env = dict(os.environ, JAVA_HOME=os.path.join(TOOLS, "jdk21"))
+    if not GHIDRA or not os.path.isfile(os.path.join(GHIDRA, "support", "analyzeHeadless.bat")):
+        sys.exit("Set GHIDRA_HOME to your Ghidra installation directory and JAVA_HOME to your JDK.")
+    env = dict(os.environ)
     cmd = [os.path.join(GHIDRA, "support", "analyzeHeadless.bat"),
            os.path.join(ROOT, "work", "ghidra_proj"), "ps3recomp_analysis",
            "-process", "EBOOT_1.00_disc.elf", "-noanalysis",

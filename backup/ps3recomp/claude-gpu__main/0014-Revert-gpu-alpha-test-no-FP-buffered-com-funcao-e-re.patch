@@ -1,5 +1,5 @@
 From 4aa45fb1eed0b4b69d631de31c82760418eb5ee8 Mon Sep 17 00:00:00 2001
-From: samuel <samuel.madureira23@gmail.com>
+From: samuel <samuelMadureira23@users.noreply.github.com>
 Date: Wed, 14 Oct 2026 14:50:10 -0300
 Subject: [PATCH 14/14] Revert "gpu: alpha test no FP buffered com funcao e
  referencia por constante (T-023)"

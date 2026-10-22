@@ -7,7 +7,9 @@ $root = Split-Path $PSScriptRoot -Parent
 $build = if ($Agent) { "$root\build-$Agent" } else { "$root\build" }
 $logs = "$root\work\runs"
 New-Item -ItemType Directory -Force $logs | Out-Null
-$env:PS3_VFS_ROOT = "C:\Users\samue\Documents\[Downloadgameps3.com]PLUS\BCUS98472 - [Play Station All Stars Battle Royale]"
+if (-not $env:PS3_VFS_ROOT -or -not (Test-Path -LiteralPath $env:PS3_VFS_ROOT -PathType Container)) {
+    throw 'Set PS3_VFS_ROOT to the PS3_GAME folder of your own game copy before running this script.'
+}
 $p = Start-Process -FilePath "$build\MyGameRecomp.exe" `
     -ArgumentList "`"$root\work\eboot\EBOOT_1.00_disc.elf`"" `
     -WorkingDirectory "$root\work" `

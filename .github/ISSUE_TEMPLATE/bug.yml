@@ -5,7 +5,8 @@ body:
   - type: markdown
     attributes:
       value: |
-        Before opening an issue, check the common problems guide: docs/PROBLEMAS_COMUNS.md.
+        For bug reports, contact `samukambr` on Discord or open an issue here.
+        Before opening an issue, check the [common problems guide](https://github.com/samuelMadureira23/allstars-port/blob/master/docs/PROBLEMAS_COMUNS.md).
         Do not attach EBOOT, .psarc, keys, firmware or any game file. Attach only the `user\logs\last_run.log` file, after reviewing it for personal paths.
   - type: input
     id: version
@@ -20,7 +21,7 @@ body:
     attributes:
       label: Port build
       description: The build or release you are using, if known.
-      placeholder: build-samuel 2be76c7c, or the release name
+      placeholder: Commit hash or release name
   - type: input
     id: gpu
     attributes:

@@ -4,7 +4,7 @@
 
 Native Windows x64 port of PlayStation All-Stars Battle Royale (BCUS98472), built by static recompilation from a fork of [ps3recomp](https://github.com/sp00nznet/ps3recomp). It uses Direct3D 12 and does not rely on an emulator at runtime.
 
-**Community:** ps3recomp Discord, sp00nznet recomp server (https://discord.gg/CRpzGWZFcu), user `@samukambr`.
+**Bug reports:** contact `samukambr` on Discord, or open an issue in this repository.
 
 ## About the project
 
@@ -28,6 +28,8 @@ The port is generated on the user's computer from the user's own copy of the gam
 - To build the port: Python 3 with Tcl/Tk, Visual Studio Build Tools with C++ support, LLVM with clang-cl, CMake and Ninja. The Launcher reports what is missing and does not download or install anything.
 
 ## How to play
+
+This repository contains development sources, patches and documentation. No downloadable package has been published in GitHub Releases yet. The steps below describe the development package; cloning this repository alone does not provide the complete runtime or Launcher.
 
 1. Open **Open Launcher.exe**.
 2. On the Home tab, select the game folder, the one that contains PS3_GAME.
@@ -57,7 +59,9 @@ The minimum target computer is defined: a Xeon E5-2680 v4 processor and an AMD R
 
 ## Feedback
 
-The ps3recomp community is on their Discord (the sp00nznet recomp server), where the runtime development happens: https://discord.gg/CRpzGWZFcu. Look for `@samukambr` there. For reports that should stay on record, use the repository Discussions or Issues. Do not send EBOOT, .psarc, keys, firmware or any game file; describe the problem and attach only the `user\logs\last_run.log` file, after reviewing it.
+Report bugs through GitHub Issues or contact `samukambr` on Discord. Include the game version, your hardware, the build and steps to reproduce the problem. The [ps3recomp Discord](https://discord.gg/CRpzGWZFcu) is also available for community discussion.
+
+Review logs before sharing them: remove personal paths, IP addresses and account details. Do not attach game files, firmware or keys.
 
 ## Credits and license
 

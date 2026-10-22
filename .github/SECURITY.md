@@ -9,7 +9,7 @@ This project is a native port of a retail game. It does not distribute game cont
 
 ## How to report
 
-Send a private message to the maintainer on the ps3recomp Discord, user `@samukambr`, or open a private security advisory on GitHub (Security tab, Report a vulnerability). Do not open a public issue for a security problem.
+Contact `samukambr` privately on Discord. You can find the maintainer in the [ps3recomp community](https://discord.gg/CRpzGWZFcu). Do not open a public issue for a security problem. Use GitHub's private vulnerability reporting only if the Security tab offers that option.
 
 ## What not to send
 

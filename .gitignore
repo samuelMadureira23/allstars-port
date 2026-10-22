@@ -31,3 +31,21 @@ net/server/allstars.db*
 net/server/captures/
 net/server/config.json
 __pycache__/
+
+# Local coordination and machine-specific development notes
+/AGENTS.md
+/CLAUDE.md
+/PLANO.md
+/coord/
+/docs/CONTEXTO_COMPLETO.md
+/docs/CRITICA*.md
+/docs/ESTIMATIVAS*.md
+/docs/VIDEO_SAMUEL*.md
+/docs/LAUNCHER_REFERENCIA*.md
+/.env
+/.env.*
+!/.env.example
+*.pem
+*.key
+*.p12
+*.pfx

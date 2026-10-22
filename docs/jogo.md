@@ -16,7 +16,7 @@ Legenda: **observado** = lido do arquivo; *inferido* = dedução, não confirmad
 | NP | `NP_COMMUNICATION_ID NPWR02621_00` (troféus em `TROPDIR/NPWR02621_00/TROPHY.TRP`) |
 | Vídeo / áudio (SFO) | `RESOLUTION=55` (480/576/720 + 16:9), `SOUND_FORMAT=775` (LPCM 2/5.1/7.1, DD, DTS) |
 | Formato do dump | **pasta JB** (`PS3_DISC.SFB` + `PS3_GAME/`), não ISO; 23.933 arquivos, 6,31 GB |
-| Local | `Documents\[Downloadgameps3.com]PLUS\BCUS98472 - [...]` (somente leitura) |
+| Local | `C:\Games\BCUS98472` (somente leitura) |
 
 Conteúdo de `PS3_GAME/` (observado): `PARAM.SFO`, ícones/fundos PNG, `SND0.AT3` (RIFF/ATRAC3), `PS3LOGO.DAT`,
 `LICDIR/LIC.DAT` (`PS3LICDA`), `TROPDIR/`, `PKGDIR/PKG00/INSTALL.PKG` (manual digital, `NPUO70233`, 39,6 MB) e `USRDIR/`.
