@@ -1,76 +1,76 @@
-# PlayStation All-Stars Battle Royale: port nativo para PC (Windows)
+# PlayStation All-Stars Battle Royale: native PC port (Windows)
 
-**English:** [README in English](docs/README_GITHUB_EN.md)
+**Português:** [README em português](docs/README_GITHUB.md)
 
-Port nativo para Windows x64 de PlayStation All-Stars Battle Royale (BCUS98472), feito por recompilação estática a partir do fork do [ps3recomp](https://github.com/sp00nznet/ps3recomp). Usa Direct3D 12 e não depende de emulador para executar.
+Native Windows x64 port of PlayStation All-Stars Battle Royale (BCUS98472), built by static recompilation from a fork of [ps3recomp](https://github.com/sp00nznet/ps3recomp). It uses Direct3D 12 and does not rely on an emulator at runtime.
 
-**Relatos de bugs:** Discord `samukambr` ou Issues deste repositório.
+**Bug reports:** contact `samukambr` on Discord, or open an issue in this repository.
 
-## Sobre o projeto
+## About the project
 
-O jogo original foi compilado para o processador Cell do PlayStation 3. Este projeto traduz o código do processador principal (PPU) e das unidades sinérgicas (SPU) para C, compila esse código junto com uma camada que substitui as bibliotecas do console e encaminha os comandos gráficos para o Direct3D 12. O resultado é um executável nativo, sem emulação de instruções em tempo de execução.
+The original game was compiled for the PlayStation 3 Cell processor. This project translates the code of the main processor (PPU) and of the synergistic processing units (SPU) to C, compiles that code together with a layer that replaces the console libraries, and forwards the graphics commands to Direct3D 12. The result is a native executable with no instruction-level emulation at runtime.
 
-O port é gerado no computador do usuário a partir da cópia dele do jogo. Este repositório não contém EBOOT, código gerado, executável do port, arquivos .psarc, texturas, áudio, vídeo, firmware ou saves. É necessário ter a própria cópia do disco BCUS98472, versão 1.00.
+The port is generated on the user's computer from the user's own copy of the game. This repository does not contain the EBOOT, generated game code, the port executable, .psarc files, textures, audio, video, firmware or saves. A copy of the BCUS98472 disc, version 1.00, is required.
 
-## O que funciona
+## What works
 
-- Menus, seleção de personagens, lutas com até quatro lutadores, cenários e efeitos.
-- No computador de testes (Ryzen 7 7700 e RTX 5070), as lutas de dois jogadores mantêm 60 fps com resolução interna de até 3x, FXAA e filtro anisotrópico. As lutas de quatro jogadores ficam próximas de 50 fps. O desempenho em computadores mais modestos ainda está em medição.
-- DualShock 4, DualSense, controles Xbox e genéricos, inclusive vários conectados ao mesmo tempo, além de teclado.
-- Pré-compilação de shaders antes da partida, que reduz as travadas iniciais.
-- Partidas em rede local, usando o netcode do próprio jogo.
+- Menus, character selection, battles with up to four fighters, stages and effects.
+- On the test computer (Ryzen 7 7700 and RTX 5070), two-player battles hold 60 fps with internal resolution up to 3x, FXAA and anisotropic filtering. Four-player battles run close to 50 fps. Performance on more modest computers is still being measured.
+- DualShock 4, DualSense, Xbox and generic controllers, including several connected at the same time, plus the keyboard.
+- Shader pre-compilation before a match, which reduces the initial hitches.
+- Local network matches using the game's own netcode.
 
-## Requisitos
+## Requirements
 
-- Windows 10 ou 11, 64 bits, com placa de vídeo compatível com Direct3D 12.
-- Cópia própria de PlayStation All-Stars Battle Royale em disco, BCUS98472, versão 1.00. O EBOOT.BIN é conferido por SHA-256.
-- RPCS3 apenas para decriptar o EBOOT.BIN, pela opção Utilities, Decrypt PS3 Binaries.
-- Para compilar o port: Python 3 com Tcl/Tk, Visual Studio Build Tools com suporte a C++, LLVM com clang-cl, CMake e Ninja. O Launcher informa o que estiver faltando e não baixa nem instala nada.
+- Windows 10 or 11, 64-bit, with a Direct3D 12 capable GPU.
+- Your own copy of PlayStation All-Stars Battle Royale on disc, BCUS98472, version 1.00. The EBOOT.BIN is checked by SHA-256.
+- RPCS3 only to decrypt the EBOOT.BIN, through Utilities, Decrypt PS3 Binaries.
+- To build the port: Python 3 with Tcl/Tk, Visual Studio Build Tools with C++ support, LLVM with clang-cl, CMake and Ninja. The Launcher reports what is missing and does not download or install anything.
 
-## Como jogar
+## How to play
 
-Este repositório reúne fontes de desenvolvimento, patches e documentação. Ainda não há um pacote publicado em Releases. Os passos abaixo descrevem o pacote de desenvolvimento; clonar apenas este repositório não fornece o runtime nem o Launcher completos.
+This repository contains development sources, patches and documentation. No downloadable package has been published in GitHub Releases yet. The steps below describe the development package; cloning this repository alone does not provide the complete runtime or Launcher.
 
-1. Abra **Open Launcher.exe**.
-2. Na aba Início, selecione a pasta do jogo, aquela que contém PS3_GAME.
-3. Na aba Preparar, siga os passos na ordem: conferir o jogo, decriptar com o RPCS3, conferir o ELF, verificar as ferramentas, gerar e compilar o port e conferir o executável. A geração e a compilação levam dezenas de minutos.
-4. Opcional: para usar o update 1.12 e os conteúdos adicionais, antes de gerar e compilar, use os botões 7 e 8 da aba Preparar. O botão 7 pede a pasta do update, por exemplo dev_hdd0/game/BCUS98472 do RPCS3. O botão 8 confere o EBOOT.BIN decriptado do update. O passo de geração passa a produzir as versões 1.00 e 1.12, e o jogo abre na 1.12. O update e os conteúdos adicionais são os do usuário, instalados no RPCS3 dele.
-5. Clique em Jogar. Na primeira partida, o Launcher compila os shaders do jogo e mostra o progresso.
+1. Open **Open Launcher.exe**.
+2. On the Home tab, select the game folder, the one that contains PS3_GAME.
+3. On the Prepare tab, follow the steps in order: check the game, decrypt with RPCS3, check the ELF, verify the tools, generate and build the port, and check the executable. Generation and building take tens of minutes.
+4. Optional: to use the 1.12 update and the additional content, before generating and building, use buttons 7 and 8 on the Prepare tab. Button 7 asks for the update folder, for example dev_hdd0/game/BCUS98472 in RPCS3. Button 8 checks the decrypted EBOOT.BIN from the update. The generation step then produces both the 1.00 and 1.12 versions, and the game opens in 1.12. The update and the additional content belong to the user and are installed in the user's RPCS3.
+5. Click Play. On the first match, the Launcher compiles the game shaders and shows the progress.
 
-O guia detalhado, para quem não é técnico, está em [docs/COMO_JOGAR_COM_AMIGO.md](docs/COMO_JOGAR_COM_AMIGO.md).
+The detailed guide, for non-technical users, is in [HOW_TO_PLAY_WITH_A_FRIEND.md](docs/HOW_TO_PLAY_WITH_A_FRIEND.md).
 
-## Estado
+## Status
 
-Projeto em andamento. A versão 1.00 do disco é a base; o update 1.12, com os conteúdos adicionais, é suportado por cima dela. A versão apenas digital, sem o disco, ainda não é suportada.
+Work in progress. Version 1.00 of the disc is the base; the 1.12 update, with the additional content, is supported on top of it. The digital-only version, without the disc, is not supported yet.
 
-## Problemas conhecidos
+## Known issues
 
-- Travadas curtas na primeira vez que um efeito ou cenário aparece, enquanto os shaders correspondentes são compilados. A pré-compilação reduz esse efeito, mas ainda restam algumas ocorrências na primeira luta de cada fase.
-- Falhas visuais pontuais em casos específicos, como alguns efeitos de partículas e a intro de determinados cenários.
-- O modo online fora da rede local ainda não está disponível.
+- Short hitches the first time an effect or stage appears, while the corresponding shaders are compiled. Pre-compilation reduces this, but a few occurrences remain in the first match of each stage.
+- Occasional visual glitches in specific cases, such as some particle effects and the intro of certain stages.
+- Online play outside the local network is not available yet.
 
-## Guias
+## Guides
 
-- [Como jogar com um amigo](docs/COMO_JOGAR_COM_AMIGO.md)
-- [Problemas comuns](docs/PROBLEMAS_COMUNS.md)
-- [Como jogar online pela rede local](docs/COMO_JOGAR_ONLINE_F3.md)
+- [How to play with a friend](docs/HOW_TO_PLAY_WITH_A_FRIEND.md)
+- [Common problems](docs/PROBLEMAS_COMUNS.md)
+- [How to play online over the local network](docs/COMO_JOGAR_ONLINE_F3.md)
 
 ## Feedback
 
-Para relatar bugs, abra uma Issue ou entre em contato no Discord: `samukambr`. Informe a versão do jogo, seu hardware, o build e os passos para reproduzir o problema. A comunidade também conversa no [Discord do ps3recomp](https://discord.gg/CRpzGWZFcu).
+Report bugs through GitHub Issues or contact `samukambr` on Discord. Include the game version, your hardware, the build and steps to reproduce the problem. The [ps3recomp Discord](https://discord.gg/CRpzGWZFcu) is also available for community discussion.
 
-Revise o log antes de enviar: remova caminhos pessoais, endereços IP e dados de conta. Não anexe arquivos do jogo, firmware ou chaves.
+Review logs before sharing them: remove personal paths, IP addresses and account details. Do not attach game files, firmware or keys.
 
-## Créditos e licença
+## Credits and license
 
-- Base: [ps3recomp](https://github.com/sp00nznet/ps3recomp), licença MIT, de Ned Heller (sp00nznet) e colaboradores. A licença original está em src/ps3recomp/LICENSE.
-- O [RPCS3](https://rpcs3.net) foi usado como referência de comportamento.
-- PlayStation All-Stars Battle Royale é marca e propriedade da Sony Interactive Entertainment. Este projeto não é afiliado à Sony e não distribui conteúdo do jogo.
+- Base: [ps3recomp](https://github.com/sp00nznet/ps3recomp), MIT license, by Ned Heller (sp00nznet) and contributors. The original license is in src/ps3recomp/LICENSE.
+- [RPCS3](https://rpcs3.net) was used as a behavioural reference.
+- PlayStation All-Stars Battle Royale is a trademark and property of Sony Interactive Entertainment. This project is not affiliated with Sony and does not distribute game content.
 
-## Aviso legal
+## Legal notice
 
-Este repositório não distribui o jogo nem qualquer arquivo extraído dele. Para usar o port, é necessário possuir uma cópia legítima do disco e obter o EBOOT.BIN a partir dela. O projeto não é afiliado à Sony Interactive Entertainment e não tem como objetivo permitir o uso do jogo por quem não o possui.
+This repository does not distribute the game or any file extracted from it. To use the port, you must own a legitimate copy of the disc and obtain the EBOOT.BIN from it. The project is not affiliated with Sony Interactive Entertainment and is not intended to let people play the game without owning it.
 
-## Desenvolvimento
+## Development
 
-Consulte a [visão técnica](docs/ENGINEERING.md) e as [orientações de contribuição](CONTRIBUTING.md).
+See the [engineering overview](docs/ENGINEERING.md) and [contribution guidelines](CONTRIBUTING.md).
