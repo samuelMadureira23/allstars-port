@@ -1,3 +1,0 @@
-upstream: https://github.com/sp00nznet/ps3recomp @ 39e4f49286447b3ae3dcc2358700c840860ee677
-branch: claude-gpu/main @ 4aa45fb1eed0b4b69d631de31c82760418eb5ee8
-restaurar: git checkout -b claude-gpu/main 39e4f49286447b3ae3dcc2358700c840860ee677 && git am *.patch
