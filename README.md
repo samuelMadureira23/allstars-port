@@ -63,7 +63,7 @@ Review logs before sharing them: remove personal paths, IP addresses and account
 
 ## Support
 
-If you want to support the project, you can use Ko-fi: [![ko-fi](https://ko-fi.com/img/githubbutton_sm.svg)](https://ko-fi.com/I2Q22990Y8).
+If you like this Port and Want to support the project, you can use Ko-fi: [![ko-fi](https://ko-fi.com/img/githubbutton_sm.svg)](https://ko-fi.com/I2Q22990Y8).
 
 Donations support the development of the port. They do not include the game, the port executable or any game content; the port is still built from your own disc.
 
