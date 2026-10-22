@@ -43,8 +43,6 @@ The detailed guide, for non-technical users, is in [HOW_TO_PLAY_WITH_A_FRIEND.md
 
 Work in progress. Version 1.00 of the disc is the base; the 1.12 update, with the additional content, is supported on top of it. The digital-only version, without the disc, is not supported yet.
 
-The minimum target computer is defined: a Xeon E5-2680 v4 processor and an AMD RX 580 with 8 GB or an NVIDIA GTX 1660 with 6 GB, at 60 fps in 1080p with internal resolution from 1x to 1.5x. That target is still being measured.
-
 ## Known issues
 
 - Short hitches the first time an effect or stage appears, while the corresponding shaders are compiled. Pre-compilation reduces this, but a few occurrences remain in the first match of each stage.

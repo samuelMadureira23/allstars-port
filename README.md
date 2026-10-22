@@ -43,8 +43,6 @@ O guia detalhado, para quem não é técnico, está em [docs/COMO_JOGAR_COM_AMIG
 
 Projeto em andamento. A versão 1.00 do disco é a base; o update 1.12, com os conteúdos adicionais, é suportado por cima dela. A versão apenas digital, sem o disco, ainda não é suportada.
 
-O alvo mínimo de computador está definido: processador Xeon E5-2680 v4 e placa AMD RX 580 de 8 GB ou NVIDIA GTX 1660 de 6 GB, com 60 fps em 1080p e resolução interna de 1x a 1,5x. Esse alvo ainda está em medição.
-
 ## Problemas conhecidos
 
 - Travadas curtas na primeira vez que um efeito ou cenário aparece, enquanto os shaders correspondentes são compilados. A pré-compilação reduz esse efeito, mas ainda restam algumas ocorrências na primeira luta de cada fase.
