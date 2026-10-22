@@ -1,3 +1,0 @@
-upstream: https://github.com/sp00nznet/ps3recomp @ 39e4f49286447b3ae3dcc2358700c840860ee677
-branch: claude-net/main @ bb13c0a6ad12ebaf87f9d42a808da4d4cc3bf347
-restaurar: git checkout -b claude-net/main 39e4f49286447b3ae3dcc2358700c840860ee677 && git am *.patch
