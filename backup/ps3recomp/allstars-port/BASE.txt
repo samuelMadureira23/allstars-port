@@ -1,0 +1,3 @@
+upstream: https://github.com/sp00nznet/ps3recomp @ 39e4f49286447b3ae3dcc2358700c840860ee677
+branch: allstars-port @ f1778da37ce5685d5d9406785b0925f5d689b109
+restaurar: git checkout -b allstars-port 39e4f49286447b3ae3dcc2358700c840860ee677 && git am *.patch

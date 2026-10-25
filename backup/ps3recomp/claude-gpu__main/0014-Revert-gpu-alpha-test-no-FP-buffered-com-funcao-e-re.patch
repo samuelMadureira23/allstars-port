@@ -1,0 +1,229 @@
+From 4aa45fb1eed0b4b69d631de31c82760418eb5ee8 Mon Sep 17 00:00:00 2001
+From: samuel <samuelMadureira23@users.noreply.github.com>
+Date: Wed, 14 Oct 2026 14:50:10 -0300
+Subject: [PATCH 14/14] Revert "gpu: alpha test no FP buffered com funcao e
+ referencia por constante (T-023)"
+
+This reverts commit 87374621f1dfb3a09e6c1bdfe89ba9ade7506066.
+---
+ libs/video/rsx_d3d12_backend.c        | 36 ++++---------------
+ libs/video/rsx_fp_decompiler.c        | 51 ---------------------------
+ libs/video/rsx_fp_decompiler.h        |  4 ---
+ libs/video/tests/test_fp_decompiler.c | 15 --------
+ 4 files changed, 7 insertions(+), 99 deletions(-)
+
+diff --git a/libs/video/rsx_d3d12_backend.c b/libs/video/rsx_d3d12_backend.c
+index 4e67954..039cddf 100644
+--- a/libs/video/rsx_d3d12_backend.c
++++ b/libs/video/rsx_d3d12_backend.c
+@@ -222,7 +222,6 @@ typedef struct {
+                              * stale compile forever. */
+     u32 cmask;              /* colour write mask (PSO key) */
+     u32 cull;               /* packed face culling (PSO key) */
+-    int atest;              /* alpha test on (PSO key): func/ref come from b1 */
+     u32 cube_mask;          /* which units are cube textures (PSO key): the HLSL
+                              * declares those samplers as TextureCube, so a cube
+                              * and a 2D variant of the same program are different
+@@ -2029,16 +2028,6 @@ static void hlsl_replace_all(char* buf, size_t cap, const char* find, const char
+     }
+ }
+ 
+-/* Whether a draw needs the alpha-test variant of its pipeline: test enabled
+- * and the function is not ALWAYS. NO_ALPHATEST=1 turns it off for A/B. */
+-static int dr_atest(const D3D12DrawRecord* dr)
+-{
+-    static int off = -1;
+-    if (off < 0) off = getenv("NO_ALPHATEST") ? 1 : 0;
+-    if (off || !((dr->alpha_ctl >> 16) & 1u)) return 0;
+-    return ((dr->alpha_ctl >> 8) & 0x07u) != 7u;
+-}
+-
+ /* Which of a draw's texture units are cube textures, as a 4-bit mask. */
+ static u32 dr_cube_mask(const D3D12DrawRecord* dr)
+ {
+@@ -2070,7 +2059,7 @@ static int fp_use_constbuf(const u8* ucode)
+ 
+ static ID3D12PipelineState* vp_get_fp_pso(int vs_idx, u32 fp_addr, u32 blend, int nrt,
+                                           DXGI_FORMAT rtfmt, int exp32, u32 cmask, u32 cull,
+-                                          u32 cube_mask, int atest)
++                                          u32 cube_mask)
+ {
+     if (nrt < 1) nrt = 1; if (nrt > 4) nrt = 4;
+     if (rtfmt == 0) rtfmt = DXGI_FORMAT_R8G8B8A8_UNORM;
+@@ -2125,7 +2114,7 @@ static ID3D12PipelineState* vp_get_fp_pso(int vs_idx, u32 fp_addr, u32 blend, in
+             s_d3d.vp_fp[i].blend == blend && s_d3d.vp_fp[i].nrt == nrt &&
+             s_d3d.vp_fp[i].rtfmt == (u32)rtfmt && s_d3d.vp_fp[i].exp32 == exp32 &&
+             s_d3d.vp_fp[i].ucode_hash == uhash && s_d3d.vp_fp[i].cmask == cmask &&
+-            s_d3d.vp_fp[i].cull == cull && s_d3d.vp_fp[i].atest == atest &&
++            s_d3d.vp_fp[i].cull == cull &&
+             s_d3d.vp_fp[i].cube_mask == cube_mask)
+             return s_d3d.vp_fp[i].pso;
+     s_perf_pso_miss++;      /* falls through to a full decompile + D3DCompile */
+@@ -2184,20 +2173,12 @@ static ID3D12PipelineState* vp_get_fp_pso(int vs_idx, u32 fp_addr, u32 blend, in
+      * the CODE hash, so a literal-constant shader would hand the first copy's
+      * constants (a menu label's colour, say) to every later draw of that code. */
+     u32 nconst = 0;
+-    const int buffered = fp_use_constbuf(vm_base + off);
+-    int n = buffered
++    int n = fp_use_constbuf(vm_base + off)
+         ? rsx_fp_decompile_buffered_ex(vm_base + off, 4096, RSX_FP_CTRL_AUTO, 0u,
+                                        hlsl, sizeof(hlsl), &nconst)
+         : rsx_fp_decompile(vm_base + off, 4096, RSX_FP_CTRL_AUTO, hlsl, sizeof(hlsl));
+     (void)nconst;
+     if (n <= 0) { static int _e=0; if(_e++<16) printf("[FP] decompile fail (fp=0x%08X)\n", fp_addr); return NULL; }
+-    /* NV40 alpha test, which D3D12 does not have: discard against fp_alpha
+-     * (ref, func) from b1. Literal mode (FP_CONSTBUF=0) has no fp_alpha and
+-     * keeps the old no-alpha-test behaviour as the A/B control. */
+-    if (atest && buffered && rsx_fp_apply_alpha_test_dynamic(hlsl, sizeof(hlsl)) != 1) {
+-        static int _ae = 0;
+-        if (_ae++ < 8) fprintf(stderr, "[ALPHATEST] could not patch fp=0x%08X%c", fp_addr, 10);
+-    }
+     /* FP_LIST=1: every program the title actually compiles, with its size. A
+      * fragment program that hangs the GPU shows up here as an implausible
+      * instruction count long before it shows up as a TDR. */
+@@ -2507,7 +2488,6 @@ static ID3D12PipelineState* vp_get_fp_pso(int vs_idx, u32 fp_addr, u32 blend, in
+     s_d3d.vp_fp[s_d3d.vp_fp_n].cmask   = cmask;
+     s_d3d.vp_fp[s_d3d.vp_fp_n].cull    = cull;
+     s_d3d.vp_fp[s_d3d.vp_fp_n].cube_mask = cube_mask;
+-    s_d3d.vp_fp[s_d3d.vp_fp_n].atest   = atest;
+     s_d3d.vp_fp[s_d3d.vp_fp_n].pso     = pso;
+     s_d3d.vp_fp_n++;
+     return pso;
+@@ -3210,10 +3190,9 @@ static void vp_record_cb(u32 slot, int vs_idx, const D3D12DrawRecord* dr)
+                 s_fp_rec_hash[s_d3d.vp_parity][slot] = rsx_fp_code_hash(vm_base + foff, 4096);
+             }
+         }
+-        { float* fa = &ts[(nk ? nk : 1) * 4];   /* fp_alpha: x = ref, y = func-0x200 */
++        { float* fa = &ts[(nk ? nk : 1) * 4];   /* fp_alpha: x = alpha ref */
+           fa[0] = dr ? (float)(dr->alpha_ctl & 0xFFu) / 255.0f : 0.0f;
+-          fa[1] = dr ? (float)((dr->alpha_ctl >> 8) & 0x07u) : 7.0f;
+-          fa[2] = fa[3] = 0.0f; }
++          fa[1] = fa[2] = fa[3] = 0.0f; }
+         if (dr && dr->fp_addr) {
+             /* FPK_DBG=1: the fragment constants as the shader will see them.
+              * A program whose only output is fp_k[0].xxxx renders black if
+@@ -4372,8 +4351,7 @@ static void render_frame(void)
+                                        dr_num_rts(dr),
+                                        dr->rt_off ? rsx_surface_dxgi(dr->rt_fmt)
+                                                   : DXGI_FORMAT_R8G8B8A8_UNORM,
+-                                       dr->fp_exp32, dr->cmask, dr->cull, dr_cube_mask(dr),
+-                                       dr_atest(dr));
++                                       dr->fp_exp32, dr->cmask, dr->cull, dr_cube_mask(dr));
+         if (perf_on()) s_perf_pso += perf_now() - _ps0;
+     }
+ 
+@@ -4699,7 +4677,7 @@ static void render_frame(void)
+                                                 dr->rt_off ? rsx_surface_dxgi(dr->rt_fmt)
+                                                            : DXGI_FORMAT_R8G8B8A8_UNORM,
+                                                 dr->fp_exp32, dr->cmask, dr->cull,
+-                                                dr_cube_mask(dr), dr_atest(dr)) : NULL;
++                                                dr_cube_mask(dr)) : NULL;
+                 s_d3d.cmd_list->lpVtbl->SetPipelineState(s_d3d.cmd_list,
+                                                          dpso ? dpso : vpso);
+                 /* Per-draw viewport: the guest rect when sane, else the
+diff --git a/libs/video/rsx_fp_decompiler.c b/libs/video/rsx_fp_decompiler.c
+index 3c78978..563a5b4 100644
+--- a/libs/video/rsx_fp_decompiler.c
++++ b/libs/video/rsx_fp_decompiler.c
+@@ -1027,57 +1027,6 @@ int rsx_fp_apply_alpha_test_buffered(
+     return 1;
+ }
+ 
+-/* Alpha test with BOTH the function and the reference read from PSConstants
+- * (fp_alpha.x = ref, fp_alpha.y = CELL_GCM func - 0x200), so a program needs
+- * one pipeline with the test and one without -- not one per func/ref pair.
+- * The D3D12 backend only applies this to draws whose alpha test is enabled,
+- * keeping early depth for every other draw. */
+-int rsx_fp_apply_alpha_test_dynamic(char* hlsl, u32 out_size)
+-{
+-    if (!hlsl || out_size == 0)
+-        return -1;
+-    char* marker = NULL;
+-    for (char* p = strstr(hlsl, "    return "); p;
+-         p = strstr(p + 1, "    return "))
+-        marker = p;
+-    if (!marker)
+-        return -1;
+-    char* expression = marker + strlen("    return ");
+-    char* terminator = strstr(expression, ";\n}\n");
+-    if (!terminator || terminator == expression ||
+-        (size_t)(terminator - expression) >= 96)
+-        return -1;
+-    char output[96];
+-    memcpy(output, expression, (size_t)(terminator - expression));
+-    output[terminator - expression] = '\0';
+-
+-    const int mrt = fp_returns_struct(hlsl);
+-    char suffix[768];
+-    const int n = snprintf(suffix, sizeof(suffix),
+-        "    %s _rsx_out = %s;\n"
+-        "    const float _rsx_a = %s.a;\n"
+-        "    const float _rsx_alpha_ref = fp_alpha.x;\n"
+-        "    const int _rsx_af = (int)(fp_alpha.y + 0.5);\n"
+-        "    bool _rsx_pass = true;\n"
+-        "    if      (_rsx_af == 0) _rsx_pass = false;\n"
+-        "    else if (_rsx_af == 1) _rsx_pass = _rsx_a <  _rsx_alpha_ref;\n"
+-        "    else if (_rsx_af == 2) _rsx_pass = _rsx_a == _rsx_alpha_ref;\n"
+-        "    else if (_rsx_af == 3) _rsx_pass = _rsx_a <= _rsx_alpha_ref;\n"
+-        "    else if (_rsx_af == 4) _rsx_pass = _rsx_a >  _rsx_alpha_ref;\n"
+-        "    else if (_rsx_af == 5) _rsx_pass = _rsx_a != _rsx_alpha_ref;\n"
+-        "    else if (_rsx_af == 6) _rsx_pass = _rsx_a >= _rsx_alpha_ref;\n"
+-        "    if (!_rsx_pass) discard;\n"
+-        "    return _rsx_out;\n}\n",
+-        mrt ? "PSOutput" : "float4", output, mrt ? "_rsx_out.t0" : "_rsx_out");
+-    if (n < 0 || (u32)n >= sizeof(suffix))
+-        return -1;
+-    const size_t prefix = (size_t)(marker - hlsl);
+-    if (prefix + (size_t)n + 1 > out_size)
+-        return -1;
+-    memcpy(marker, suffix, (size_t)n + 1);
+-    return 1;
+-}
+-
+ /* --- kept from this tree when adopting the newer decompiler ---------------
+  * rsx_d3d12_backend.c calls both of these: extract_consts feeds the per-draw
+  * fp_k[] slots, code_hash keys the PSO cache on the ucode rather than the
+diff --git a/libs/video/rsx_fp_decompiler.h b/libs/video/rsx_fp_decompiler.h
+index 7cf0d89..71194e1 100644
+--- a/libs/video/rsx_fp_decompiler.h
++++ b/libs/video/rsx_fp_decompiler.h
+@@ -137,10 +137,6 @@ u64 rsx_fp_literal_source_hash(
+ int rsx_fp_apply_alpha_test_buffered(
+     char* hlsl, u32 out_size, u32 func);
+ 
+-/* Like the above, but the compare function is read from PSConstants too
+- * (fp_alpha.x = reference, fp_alpha.y = func - 0x200). 1 = applied. */
+-int rsx_fp_apply_alpha_test_dynamic(char* hlsl, u32 out_size);
+-
+ /* Plan one 256-byte-aligned allocation in a fence-retired PS constant ring.
+  * Returns 1 when it fits, 0 when the caller must submit/wait/reset first, and
+  * -1 when one allocation can never fit. */
+diff --git a/libs/video/tests/test_fp_decompiler.c b/libs/video/tests/test_fp_decompiler.c
+index b579b61..ba55f05 100644
+--- a/libs/video/tests/test_fp_decompiler.c
++++ b/libs/video/tests/test_fp_decompiler.c
+@@ -237,21 +237,6 @@ int main(void)
+         check("mrt_alpha_type", hlsl, "PSOutput _rsx_out = _out;");
+         check("mrt_alpha_cmp",  hlsl, "if (!(_rsx_out.t0.a > _rsx_alpha_ref)) discard;");
+ 
+-        /* Dynamic variant on the buffered single-target build: function and
+-         * reference both come from fp_alpha, so nothing numeric is baked in. */
+-        {
+-            u32 nk = 0;
+-            rsx_fp_decompile_buffered_ex(prog, sizeof(prog), CTRL_16BIT, 0u,
+-                                         hlsl, sizeof(hlsl), &nk);
+-            check_true("dyn_alpha_patched",
+-                       rsx_fp_apply_alpha_test_dynamic(hlsl, sizeof(hlsl)) == 1);
+-            check("dyn_alpha_cbuf", hlsl, "float4 fp_alpha;");
+-            check("dyn_alpha_src",  hlsl, "const float _rsx_a = _rsx_out.a;");
+-            check("dyn_alpha_func", hlsl, "const int _rsx_af = (int)(fp_alpha.y + 0.5);");
+-            check("dyn_alpha_ge",   hlsl, "else if (_rsx_af == 6) _rsx_pass = _rsx_a >= _rsx_alpha_ref;");
+-            check("dyn_alpha_tail", hlsl, "    if (!_rsx_pass) discard;\n    return _rsx_out;\n}\n");
+-        }
+-
+         /* The same program under 16-bit exports: r2 is a plain temp there, so
+          * the colour is h0 alone and nothing about the output changes. */
+         rsx_fp_decompile(prog, sizeof(prog), CTRL_16BIT, hlsl, sizeof(hlsl));
+-- 
+2.55.0.windows.3
+

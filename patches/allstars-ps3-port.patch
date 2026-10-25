@@ -1,0 +1,207 @@
+diff --git a/main.cpp b/main.cpp
+index 4823ddf..b248959 100644
+--- a/main.cpp
++++ b/main.cpp
+@@ -305,6 +305,51 @@ static bool alloc_guest_vm(void)
+ /* ---------------------------------------------------------------------------
+  * Main
+  * -----------------------------------------------------------------------*/
++/* PORT_GSTACK="8,20,40": at each listed second, print every guest thread's
++ * cia/lr and back-chain (runtime: ppu_debug_dump_guest_stacks) to stderr. Two
++ * or more samples show which threads are parked (same chain) vs progressing. */
++extern "C" void ppu_debug_dump_guest_stacks(FILE* f);
++
++static DWORD WINAPI gstack_watchdog(LPVOID arg)
++{
++    const char* spec = (const char*)arg;
++    int prev = 0;
++    for (const char* p = spec; *p; ) {
++        int t = atoi(p);
++        if (t > prev) { Sleep((DWORD)(t - prev) * 1000); prev = t; }
++        fprintf(stderr, "[GSTACK] ===== t=%ds =====\n", t);
++        ppu_debug_dump_guest_stacks(stderr);
++        while (*p && *p != ',') p++;
++        if (*p == ',') p++;
++    }
++    return 0;
++}
++
++#ifdef _WIN32
++/* Last-chance crash report: without it a host fault inside lifted code or an
++ * HLE handler just ends the process with nothing in the log. */
++extern "C" uint32_t    g_last_hle_nid;
++extern "C" const char* g_last_hle_name;
++
++static LONG WINAPI port_crash_filter(EXCEPTION_POINTERS* ep)
++{
++    static volatile LONG once = 0;
++    if (InterlockedExchange(&once, 1)) return EXCEPTION_CONTINUE_SEARCH;
++    HMODULE self = GetModuleHandleA(NULL);
++    const EXCEPTION_RECORD* er = ep->ExceptionRecord;
++    fprintf(stderr, "\n[CRASH] code=0x%08lX rip=%p (exe rva 0x%llX) fault addr=0x%llX%s; last HLE 0x%08X %s\n",
++            er->ExceptionCode, er->ExceptionAddress,
++            (unsigned long long)((char*)er->ExceptionAddress - (char*)self),
++            er->NumberParameters > 1 ? (unsigned long long)er->ExceptionInformation[1] : 0ull,
++            er->NumberParameters > 1 && vm_base && er->ExceptionInformation[1] >= (ULONG_PTR)vm_base &&
++                er->ExceptionInformation[1] < (ULONG_PTR)vm_base + 0x100000000ull ? " (inside guest VM)" : "",
++            g_last_hle_nid, g_last_hle_name ? g_last_hle_name : "");
++    ppu_debug_dump_guest_stacks(stderr);
++    fflush(stderr);
++    return EXCEPTION_CONTINUE_SEARCH;
++}
++#endif
++
+ static void harness_guest_caller(uint32_t opd, uint64_t a0, uint64_t a1,
+                                  uint64_t a2, uint64_t a3, uint64_t a4,
+                                  uint64_t a5, uint64_t a6, uint64_t a7)
+@@ -325,6 +370,7 @@ int main(int argc, char** argv)
+      * inflates every shorter wait the title makes and throttles the whole
+      * thing. POSIX timers are already fine-grained. */
+     timeBeginPeriod(1);
++    SetUnhandledExceptionFilter(port_crash_filter);
+     setvbuf(stdout, NULL, _IONBF, 0);   /* unbuffered: do not lose prints on a kill */
+ #endif
+ 
+@@ -369,6 +415,8 @@ int main(int argc, char** argv)
+      * until the title registers its vblank and flip handlers during init. */
+     g_ps3_guest_caller = harness_guest_caller;
+     CreateThread(NULL, 4u * 1024 * 1024, frame_clock, NULL, 0, NULL);
++    if (const char* gs = getenv("PORT_GSTACK"); gs && *gs)
++        CreateThread(NULL, 0, gstack_watchdog, (LPVOID)gs, 0, NULL);
+ 
+     printf("\n[boot] dispatching entry OPD 0x%08X (stack top 0x%08X)\n\n",
+            entry, STACK_TOP);
+diff --git a/stubs.cpp b/stubs.cpp
+index c6d6eb2..d02f28e 100644
+--- a/stubs.cpp
++++ b/stubs.cpp
+@@ -26,8 +26,129 @@
+  * answers those modules instead.
+  * -----------------------------------------------------------------------*/
+ 
++#include "ppu_recomp.h"
++
++extern "C" void     ps3_hle_register_ctx(uint32_t nid, const char* name, void (*fn)(ppu_context*));
++extern "C" uint32_t vm_read32(uint64_t a);
++extern "C" void     vm_write32(uint64_t a, uint32_t v);
++
++extern "C" uint8_t* vm_base;
++extern "C" s32 cellSpursEventFlagSet(void* eventFlag, u16 bits);
++extern "C" int stbi_zlib_decode_buffer(char* obuffer, int olen, const char* ibuffer, int ilen);
++extern "C" int stbi_zlib_decode_noheader_buffer(char* obuffer, int olen, const char* ibuffer, int ilen);
++
++/* _cellSpursLFQueuePushBody(CellSpursLFQueue* queue, const void* buffer, u32 isBlocking)
++ *
++ * FIOS's psarc dearchiver pushes one 32-byte Edge decompression request per
++ * compressed block to the edgeDecompressorTaskset's LFQueue (submit code at
++ * 0x4FAE74, built at r1+0x70). The HLE library has no handler for this NID, so
++ * the request never reached the SPU task and FIOS's media thread polled forever.
++ *
++ * Instead of feeding the lifted SPU task through a bit-exact LFQueue, run the
++ * request on the host -- which is exactly what the task would do:
++ *   +0x00 src EA (may be unaligned)   +0x10 work-counter EA | flag bit(s)
++ *   +0x04 dst EA                      +0x14 SPURS event flag EA
++ *   +0x08 compressed size             +0x18 u16 event flag bits
++ *   +0x0C dst capacity                +0x1A u16 / +0x1C u16 (0 for zlib)
++ * then decrement the work counter and raise the event flag bits. */
++/* ---- psarc block decryption (what the edgeDecompressorTaskset SPU image does
++ * before inflating; reversed from its func 0xDB58) ---------------------------
++ * Every block is: u16 header, then AES-256-CTR ciphertext of a raw deflate
++ * stream. Counter block = DE AD BE EF | be32 block length | 00 00 | header |
++ * be32 block index. The key and the DEADBEEF prefix are read out of the SPU
++ * image the EBOOT itself loads into guest memory, so no key material lives in
++ * this source tree. A zero byte at LS 0x114A6 ("decrypt " flag) disables it. */
++#include <vector>
++#include <windows.h>
++#include <bcrypt.h>
++#pragma comment(lib, "bcrypt.lib")
++
++static const uint32_t kSpuDecompImageEA = 0x00B9F980;  /* spu_0002 in EBOOT 1.00 */
++static uint32_t spu_ls_to_ea(uint32_t ls) { return kSpuDecompImageEA + ls - 0x3000 + 0x100; }
++
++static BCRYPT_KEY_HANDLE psarc_aes_key(void)
++{
++    static BCRYPT_KEY_HANDLE key = nullptr;
++    static bool tried = false;
++    if (tried) return key;
++    tried = true;
++    BCRYPT_ALG_HANDLE alg = nullptr;
++    if (BCryptOpenAlgorithmProvider(&alg, BCRYPT_AES_ALGORITHM, nullptr, 0) != 0) return nullptr;
++    BCryptSetProperty(alg, BCRYPT_CHAINING_MODE, (PUCHAR)BCRYPT_CHAIN_MODE_ECB,
++                      sizeof(BCRYPT_CHAIN_MODE_ECB), 0);
++    if (BCryptGenerateSymmetricKey(alg, &key, nullptr, 0,
++                                   vm_base + spu_ls_to_ea(0x114C0), 32, 0) != 0) key = nullptr;
++    return key;
++}
++
++static bool psarc_decrypt_enabled(void) { return vm_base[spu_ls_to_ea(0x114A6)] != 0; }
++
++/* In place over [p, p+len): p[0..1] is the header, ciphertext starts at p+2. */
++static bool psarc_decrypt_block(uint8_t* p, uint32_t len)
++{
++    BCRYPT_KEY_HANDLE key = psarc_aes_key();
++    if (!key) return false;
++    uint8_t ctr[16], ks[16];
++    memcpy(ctr, vm_base + spu_ls_to_ea(0x114B0), 4);
++    ctr[4] = (uint8_t)(len >> 24); ctr[5] = (uint8_t)(len >> 16);
++    ctr[6] = (uint8_t)(len >> 8);  ctr[7] = (uint8_t)len;
++    ctr[8] = ctr[9] = 0; ctr[10] = p[0]; ctr[11] = p[1];
++    for (uint32_t off = 2, blk = 0; off < len; off += 16, blk++) {
++        ctr[12] = (uint8_t)(blk >> 24); ctr[13] = (uint8_t)(blk >> 16);
++        ctr[14] = (uint8_t)(blk >> 8);  ctr[15] = (uint8_t)blk;
++        ULONG got = 0;
++        if (BCryptEncrypt(key, ctr, 16, nullptr, nullptr, 0, ks, 16, &got, 0) != 0) return false;
++        for (uint32_t j = 0; j < 16 && off + j < len; j++) p[off + j] ^= ks[j];
++    }
++    return true;
++}
++
++static void hle_lfqueue_push_body(ppu_context* ctx)
++{
++    uint32_t q = (uint32_t)ctx->gpr[3], e = (uint32_t)ctx->gpr[4];
++    uint32_t src = vm_read32(e + 0x00), dst = vm_read32(e + 0x04);
++    uint32_t csz = vm_read32(e + 0x08), expect = vm_read32(e + 0x0C);
++    uint32_t ctr = vm_read32(e + 0x10), flag = vm_read32(e + 0x14);
++    uint32_t w18 = vm_read32(e + 0x18), w1c = vm_read32(e + 0x1C);
++    uint16_t bits = (uint16_t)(w18 >> 16);
++    uint32_t skip_begin = w18 & 0xFFFF, skip_end = w1c >> 16;
++    uint32_t ctr_ea = ctr & ~3u;
++
++    /* Work on a host copy: the source sits at the tail of the destination
++     * (in-place layout: src = dst + expect - csz), so never write dst first. */
++    std::vector<uint8_t> in(vm_base + src, vm_base + src + csz);
++    const char* how = "plain";
++    int n = -1;
++    if (psarc_decrypt_enabled() && csz > 2 && psarc_decrypt_block(in.data(), csz)) how = "aes+inflate";
++    std::vector<uint8_t> out(expect + 16);
++    n = stbi_zlib_decode_noheader_buffer((char*)out.data(), (int)out.size(),
++                                         (const char*)in.data() + 2, (int)csz - 2);
++    if (n < 0) {  /* not deflate: a stored block, passed through as-is */
++        how = "stored";
++        memcpy(out.data(), vm_base + src, csz < out.size() ? csz : out.size());
++        n = (int)csz;
++    }
++    uint32_t keep = (uint32_t)n > skip_begin + skip_end ? (uint32_t)n - skip_begin - skip_end : 0;
++    if (keep > expect) keep = expect;
++    memcpy(vm_base + dst, out.data() + skip_begin, keep);
++
++    uint32_t before = ctr_ea ? vm_read32(ctr_ea) : 0;
++    if (ctr_ea && before) vm_write32(ctr_ea, before - 1);
++
++    static int logged = 0;
++    if (logged++ < 6 || (n != (int)expect && logged < 200))
++        fprintf(stderr, "[edge-inflate] q=0x%08X src=0x%08X %u -> dst=0x%08X expect=%u skip=%u/%u: %s %d bytes "
++                "ctr@0x%08X %u->%u flag=0x%08X bits=0x%04X\n",
++                q, src, csz, dst, expect, skip_begin, skip_end, how, n,
++                ctr_ea, before, ctr_ea ? vm_read32(ctr_ea) : 0, flag, bits);
++
++    if (flag && bits) cellSpursEventFlagSet((void*)(uintptr_t)flag, bits);
++    ctx->gpr[3] = 0;
++}
++
+ extern "C" void ps3_load_prx_modules(void)
+ {
++    ps3_hle_register_ctx(0x8A85674D, "_cellSpursLFQueuePushBody", hle_lfqueue_push_body);
+ }
+ 
+ /* ---------------------------------------------------------------------------

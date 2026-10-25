@@ -1,0 +1,51 @@
+analysis/
+reports/
+tools/rpcs3-analysis/
+tools/ps3recomp/
+.venv/
+__pycache__/
+*.pyc
+*.BIN
+*.elf
+*.psarc
+*.pkg
+*.sprx
+# --- adicionado na coordenação multiagente (claude, 2026-10-14) ---
+# repositórios próprios (versionados separadamente) e worktrees dos agentes
+src/
+agents/
+# código gerado, builds, logs e dados derivados do jogo (grandes / não distribuíveis)
+work/
+build/
+build-*/
+*.map
+*.dll
+*.exe
+# estado local de coordenação
+coord/locks/
+# screenshots/capturas do jogo (saída do jogo, não versionar)
+docs/marcos/
+
+# servidor substituto (net/server)
+net/server/allstars.db*
+net/server/captures/
+net/server/config.json
+__pycache__/
+
+# Local coordination and machine-specific development notes
+/AGENTS.md
+/CLAUDE.md
+/PLANO.md
+/coord/
+/docs/CONTEXTO_COMPLETO.md
+/docs/CRITICA*.md
+/docs/ESTIMATIVAS*.md
+/docs/VIDEO_SAMUEL*.md
+/docs/LAUNCHER_REFERENCIA*.md
+/.env
+/.env.*
+!/.env.example
+*.pem
+*.key
+*.p12
+*.pfx

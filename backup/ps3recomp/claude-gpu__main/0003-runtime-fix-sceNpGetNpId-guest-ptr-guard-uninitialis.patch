@@ -1,0 +1,180 @@
+From 5203765080bb2167b2d564c401cef18acf795b36 Mon Sep 17 00:00:00 2001
+From: samuel <samuelMadureira23@users.noreply.github.com>
+Date: Wed, 14 Oct 2026 08:46:20 -0300
+Subject: [PATCH 03/14] runtime: fix sceNpGetNpId guest ptr, guard
+ uninitialised PAMF readers, forget dead SPU ctxs in lock-line registry
+
+- sceNpGetNpId wrote the fake NpId through the raw guest EA (host AV right
+  after sceNpInit in PSASBR).
+- cellPamfReader getters dereferenced a NULL pamfAddr when the title reads a
+  reader that cellSail (not cellPamfReaderInitialize) owns; return an error.
+- spu_coh_reserve registered every GETLLAR context forever; SPURS jobs run on a
+  stack-local ctx, so later spu_coh_notify_write calls wrote into dead stack
+  frames. Add spu_coh_forget() and call it when job/policy contexts go away.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ libs/codec/cellPamf.c       |  6 ++++++
+ libs/network/sceNp.c        |  2 ++
+ runtime/spu/spu_coherency.c | 14 ++++++++++++++
+ runtime/spu/spu_coherency.h |  3 +++
+ runtime/spu/spurs_job.c     |  2 ++
+ runtime/spu/spurs_policy.c  |  4 +++-
+ 6 files changed, 30 insertions(+), 1 deletion(-)
+
+diff --git a/libs/codec/cellPamf.c b/libs/codec/cellPamf.c
+index 1b6275d..dbbfc71 100644
+--- a/libs/codec/cellPamf.c
++++ b/libs/codec/cellPamf.c
+@@ -190,6 +190,7 @@ s32 cellPamfReaderGetPresentationStartTime(CellPamfReader* reader, u64* startTim
+     if (!reader || !startTime)
+         return (s32)CELL_PAMF_ERROR_INVALID_ARG;
+ 
++    if (!reader->pamfAddr) return (s32)CELL_PAMF_ERROR_INVALID_ARG;   /* never initialized (cellSail owns the header) */
+     const u8* base = (const u8*)reader->pamfAddr;
+     vm_write64((u32)(uintptr_t)startTime, (u64)be32(base + PAMF_OFF_PRESENT_START));
+     return CELL_OK;
+@@ -201,6 +202,7 @@ s32 cellPamfReaderGetPresentationEndTime(CellPamfReader* reader, u64* endTime)
+     if (!reader || !endTime)
+         return (s32)CELL_PAMF_ERROR_INVALID_ARG;
+ 
++    if (!reader->pamfAddr) return (s32)CELL_PAMF_ERROR_INVALID_ARG;   /* never initialized (cellSail owns the header) */
+     const u8* base = (const u8*)reader->pamfAddr;
+     vm_write64((u32)(uintptr_t)endTime, (u64)be32(base + PAMF_OFF_PRESENT_END));
+     return CELL_OK;
+@@ -212,6 +214,7 @@ u32 cellPamfReaderGetMuxRateBound(CellPamfReader* reader)
+     if (!reader)
+         return 0;
+ 
++    if (!reader->pamfAddr) return 0;   /* never initialized (cellSail owns the header) */
+     const u8* base = (const u8*)reader->pamfAddr;
+     return be32(base + PAMF_OFF_MUX_RATE);
+ }
+@@ -235,6 +238,7 @@ static const u8* get_stream_desc_raw(CellPamfReader* reader, u32 index)
+     if (!reader || index >= reader->numStreams)
+         return NULL;
+ 
++    if (!reader->pamfAddr) return NULL;   /* never initialized (cellSail owns the header) */
+     const u8* base = (const u8*)reader->pamfAddr;
+     return base + reader->streamTableOffset + index * PAMF_STREAM_DESC_SIZE;
+ }
+@@ -481,6 +485,7 @@ s32 cellPamfReaderGetNumberOfEp(CellPamfReader* reader, s32* numEp)
+     if (!reader || !numEp)
+         return (s32)CELL_PAMF_ERROR_INVALID_ARG;
+ 
++    if (!reader->pamfAddr) return (s32)CELL_PAMF_ERROR_INVALID_ARG;   /* never initialized (cellSail owns the header) */
+     const u8* base = (const u8*)reader->pamfAddr;
+     vm_write32((u32)(uintptr_t)numEp, be32(base + PAMF_OFF_EP_COUNT));
+     return CELL_OK;
+@@ -492,6 +497,7 @@ s32 cellPamfReaderGetEp(CellPamfReader* reader, u32 epIndex, CellPamfEp* ep)
+     if (!reader || !ep)
+         return (s32)CELL_PAMF_ERROR_INVALID_ARG;
+ 
++    if (!reader->pamfAddr) return (s32)CELL_PAMF_ERROR_INVALID_ARG;   /* never initialized (cellSail owns the header) */
+     const u8* base = (const u8*)reader->pamfAddr;
+     u32 epCount = be32(base + PAMF_OFF_EP_COUNT);
+     if (epIndex >= epCount)
+diff --git a/libs/network/sceNp.c b/libs/network/sceNp.c
+index 6260452..e5154bf 100644
+--- a/libs/network/sceNp.c
++++ b/libs/network/sceNp.c
+@@ -73,6 +73,8 @@ s32 sceNpTerm(void)
+ 
+ s32 sceNpGetNpId(s32 userId, SceNpId* npId)
+ {
++    /* Guest EA from the HLE ABI adapter; np_build_fake_id writes through it. */
++    npId = GUEST_PTR(npId, SceNpId*);
+     (void)userId;
+ 
+     if (!s_np_initialized)
+diff --git a/runtime/spu/spu_coherency.c b/runtime/spu/spu_coherency.c
+index 38379c5..26e8353 100644
+--- a/runtime/spu/spu_coherency.c
++++ b/runtime/spu/spu_coherency.c
+@@ -94,6 +94,20 @@ void spu_coh_reserve(spu_context* ctx, uint32_t ea)
+           fflush(stderr); } }
+ }
+ 
++/* Drop a context from the lock-line registry. Every context that ever ran a
++ * GETLLAR stays registered, and spu_coh_notify_write dereferences them on each
++ * guest store to a reserved line -- so a context that goes away (a SPURS job's
++ * stack-local ctx, a freed policy-module ctx) must be forgotten first, or the
++ * next notify writes into a dead stack frame / freed block. */
++void spu_coh_forget(spu_context* ctx)
++{
++    if (!ctx) return;
++    spu_lockline_lock();
++    for (int i = 0; i < SPU_COH_MAX_CTX; i++)
++        if (s_coh_ctxs[i] == ctx) s_coh_ctxs[i] = NULL;
++    spu_lockline_unlock();
++}
++
+ int spu_coh_is_reserved(uint32_t addr)
+ {
+     if (!s_coh_armed) return 0;
+diff --git a/runtime/spu/spu_coherency.h b/runtime/spu/spu_coherency.h
+index a29822b..7d688af 100644
+--- a/runtime/spu/spu_coherency.h
++++ b/runtime/spu/spu_coherency.h
+@@ -63,6 +63,9 @@ int spu_coh_is_reserved(uint32_t addr);
+  * reservation state it clears are seen by an SPU's PUTLLC as one transaction. */
+ void spu_coh_notify_write(uint32_t ea);
+ 
++/* Unregister a context before it is destroyed (see spu_coherency.c). */
++void spu_coh_forget(spu_context* ctx);
++
+ /* Count of LR events delivered. A parked SPURS service that never wakes with
+  * this at zero is a coherence miss; nonzero moves the question downstream. */
+ extern unsigned long g_spu_lr_raise;
+diff --git a/runtime/spu/spurs_job.c b/runtime/spu/spurs_job.c
+index 175b515..b09219a 100644
+--- a/runtime/spu/spurs_job.c
++++ b/runtime/spu/spurs_job.c
+@@ -35,6 +35,7 @@
+  * exact.
+  */
+ 
++#include "spu_coherency.h"
+ #include "spu_workload.h"
+ #include "spu_context.h"
+ 
+@@ -356,6 +357,7 @@ int spu_run_spurs_job(spu_lifted_entry_fn entry, int image_id,
+      * HALT-ASSERT heqi 0x1650 seen once per jm2 job is NORMAL COMPLETION
+      * noise, not a failure: the job's real work finished before the jump. */
+     spu_run_with_halt(entry, &ctx);
++    spu_coh_forget(&ctx);   /* ctx lives on this stack frame */
+ 
+     /* Capture the job's outbound mailbox. These are LS POINTERS TO STRINGS for
+      * the SPU printf service, NOT query results -- value 0x83C0 from the sound
+diff --git a/runtime/spu/spurs_policy.c b/runtime/spu/spurs_policy.c
+index 1acf8a3..275ef39 100644
+--- a/runtime/spu/spurs_policy.c
++++ b/runtime/spu/spurs_policy.c
+@@ -22,6 +22,7 @@
+  * base; spu_indirect_branch intercepts them (ctx->policy_mode) and HLEs the
+  * kernel side: select = "no contention, keep running", exit = end of run.
+  */
++#include "spu_coherency.h"
+ #include "spu_context.h"
+ #include "spu_workload.h"
+ #include <stdio.h>
+@@ -482,7 +483,7 @@ int spurs_run_taskset_policy_probe(uint32_t taskset_ea, uint32_t taskid,
+     /* size 0 = this port linked the default stub blob (spurs_policy_blob_weak.c),
+      * i.e. it has no lifted taskset policy image -- don't run an empty LS. */
+     if (!g_taskset_policy_size ||
+-        g_taskset_policy_size > SPU_LS_SIZE - 0xA00) { free(ctx); return -1; }
++        g_taskset_policy_size > SPU_LS_SIZE - 0xA00) { spu_coh_forget(ctx); free(ctx); return -1; }
+     memcpy(ctx->ls + 0xA00, g_taskset_policy_bytes, g_taskset_policy_size);
+ 
+     /* SpursKernelContext at LS 0x100 (same layout as spu_run_policy_module). */
+@@ -525,6 +526,7 @@ int spurs_run_taskset_policy_probe(uint32_t taskset_ea, uint32_t taskid,
+         memcpy(out_2700, ctx->ls + 0x2700, n);
+     }
+     int st = (int)ctx->status;
++    spu_coh_forget(ctx);
+     free(ctx);
+     return st;
+ }
+-- 
+2.55.0.windows.3
+

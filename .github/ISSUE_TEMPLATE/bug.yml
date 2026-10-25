@@ -1,0 +1,79 @@
+name: Bug report
+description: Report a reproducible problem with the port.
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        For bug reports, contact `samukambr` on Discord or open an issue here.
+        Before opening an issue, check the [common problems guide](https://github.com/samuelMadureira23/allstars-port/blob/master/docs/PROBLEMAS_COMUNS.md).
+        Do not attach EBOOT, .psarc, keys, firmware or any game file. Attach only the `user\logs\last_run.log` file, after reviewing it for personal paths.
+  - type: input
+    id: version
+    attributes:
+      label: Game version
+      description: Which version are you running?
+      placeholder: 1.00 disc, or 1.12 update
+    validations:
+      required: true
+  - type: input
+    id: build
+    attributes:
+      label: Port build
+      description: The build or release you are using, if known.
+      placeholder: Commit hash or release name
+  - type: input
+    id: gpu
+    attributes:
+      label: GPU and driver
+      placeholder: NVIDIA RTX 5070, driver 566.36
+    validations:
+      required: true
+  - type: input
+    id: cpu
+    attributes:
+      label: CPU and RAM
+      placeholder: Ryzen 7 7700, 32 GB
+    validations:
+      required: true
+  - type: input
+    id: os
+    attributes:
+      label: Windows version
+      placeholder: Windows 11 24H2
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: What did you do, in order?
+      placeholder: |
+        1. Open the Launcher
+        2. Select the game folder
+        3. Start a match on the Dojo stage
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected result
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual result
+      description: Include the error message, if any.
+    validations:
+      required: true
+  - type: textarea
+    id: log
+    attributes:
+      label: Log
+      description: Attach or paste the contents of `user\logs\last_run.log`, after removing personal paths.
+  - type: textarea
+    id: screenshots
+    attributes:
+      label: Screenshots or video
+      description: Drag images here, if useful.

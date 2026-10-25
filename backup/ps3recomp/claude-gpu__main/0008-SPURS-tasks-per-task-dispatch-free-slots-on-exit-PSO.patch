@@ -1,0 +1,322 @@
+From bb13c0a6ad12ebaf87f9d42a808da4d4cc3bf347 Mon Sep 17 00:00:00 2001
+From: samuel <samuelMadureira23@users.noreply.github.com>
+Date: Wed, 14 Oct 2026 13:15:03 -0300
+Subject: [PATCH 08/14] SPURS tasks: per-task dispatch, free slots on exit; PSO
+ cache keyed by code hash
+
+- cellSpursCreateTask: serialize slot allocation (two PPU threads create
+  tasks concurrently) and pass taskset+taskid to the async SPU thread
+  explicitly instead of via shared globals (task 5 ran task 6's args).
+- Release the task slot (and BE taskset bits) when the task program
+  returns; the 129th CreateTask used to fail with NOMEM (menu hang).
+- JoinTask looks the task up by slot index.
+- D3D12 FP pipeline cache keys on the ucode code hash, not fp_addr: the
+  game copies each FP to a ring buffer per draw, so every draw missed
+  (99% of frame time in PSO creation after the main menu).
+- spu_lifted_job.h: spu_coh_forget before return (use-after-free), SPU_TASKARG.
+- SPU_TASKTIME timing log; r28-r31 in guest stack dumps.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ libs/spurs/cellSpurs.c            | 77 +++++++++++++++++++++++--------
+ libs/video/rsx_d3d12_backend.c    |  8 +++-
+ runtime/spu/spu_lifted_job.h      |  8 ++++
+ runtime/spu/spu_workload.c        | 47 ++++++++++++++++++-
+ runtime/spu/spu_workload.h        |  7 +++
+ runtime/syscalls/sys_ppu_thread.c |  6 ++-
+ 6 files changed, 130 insertions(+), 23 deletions(-)
+
+diff --git a/libs/spurs/cellSpurs.c b/libs/spurs/cellSpurs.c
+index baf6a8c..c10e3b6 100644
+--- a/libs/spurs/cellSpurs.c
++++ b/libs/spurs/cellSpurs.c
+@@ -71,6 +71,39 @@ static SpursWorkload s_workloads[CELL_SPURS_MAX_WORKLOAD];
+ static SpursTask     s_tasks[CELL_SPURS_MAX_TASK];
+ static u32           s_next_task_id = 0;
+ 
++/* cellSpursCreateTask runs on several PPU threads at once (PSASBR's menu creates
++ * from two), and the task table + the BE taskset bits are shared -- so slot
++ * allocation and release go through one lock. */
++#ifdef _WIN32
++static SRWLOCK s_task_lock = SRWLOCK_INIT;
++#define TASK_LOCK()   AcquireSRWLockExclusive(&s_task_lock)
++#define TASK_UNLOCK() ReleaseSRWLockExclusive(&s_task_lock)
++#else
++static pthread_mutex_t s_task_lock = PTHREAD_MUTEX_INITIALIZER;
++#define TASK_LOCK()   pthread_mutex_lock(&s_task_lock)
++#define TASK_UNLOCK() pthread_mutex_unlock(&s_task_lock)
++#endif
++
++/* Called from the SPU host thread when a CreateTask task's program returns:
++ * the task has exited, so its id is free again (real SPURS reuses it). */
++void cellSpurs_task_exited(uint32_t taskset_ea, uint32_t taskid, int32_t rc)
++{
++    if (taskid >= CELL_SPURS_MAX_TASK) return;
++    TASK_LOCK();
++    s_tasks[taskid].completed = 1;
++    s_tasks[taskid].active = 0;
++    s_tasks[taskid].exitCode = rc;
++    s_tasks[taskid].in_use = 0;
++    if (taskset_ea) {
++        spurs_bitset_clear(taskset_ea + CSTS_RUNNING, taskid);
++        spurs_bitset_clear(taskset_ea + CSTS_READY, taskid);
++        spurs_bitset_clear(taskset_ea + CSTS_PENDING_READY, taskid);
++        spurs_bitset_clear(taskset_ea + CSTS_ENABLED, taskid);
++        spurs_bitset_clear(taskset_ea + CSTS_WAITING, taskid);
++    }
++    TASK_UNLOCK();
++}
++
+ /* ---------------------------------------------------------------------------
+  * Event flag sync side table
+  *
+@@ -814,6 +847,7 @@ s32 cellSpursCreateTask(CellSpursTaskset* taskset, CellSpursTaskId* taskId,
+     }
+ 
+     /* Find a free task slot */
++    TASK_LOCK();
+     for (u32 i = 0; i < CELL_SPURS_MAX_TASK; i++) {
+         if (!s_tasks[i].in_use) {
+             s_tasks[i].in_use = 1;
+@@ -847,9 +881,9 @@ s32 cellSpursCreateTask(CellSpursTaskset* taskset, CellSpursTaskId* taskId,
+             g_ydkj_real_taskset_ea = taskset_ea;
+             g_ydkj_real_taskid     = i;
+ 
+-            printf("[cellSpurs] CreateTask(id=%u, entry=%p, arg=%08X %08X %08X %08X"
++            printf("[cellSpurs] CreateTask(id=%u #%u, entry=%p, arg=%08X %08X %08X %08X"
+                    " ctx=0x%08X lsp=%08X %08X %08X %08X)\n",
+-                   s_tasks[i].id, elf, task_arg[0], task_arg[1], task_arg[2], task_arg[3],
++                   i, s_tasks[i].id, elf, task_arg[0], task_arg[1], task_arg[2], task_arg[3],
+                    context_ea, task_lsp[0], task_lsp[1], task_lsp[2], task_lsp[3]);
+ 
+             /* One-shot: dump the memory the task argument points at, to find the
+@@ -921,14 +955,21 @@ s32 cellSpursCreateTask(CellSpursTaskset* taskset, CellSpursTaskId* taskId,
+                 size_t sz = spu_elf_image_size(host_elf, 2u * 1024 * 1024);
+                 if (sz)
+                     /* Async: SPURS tasks are persistent workers — running them
+-                     * inline would block this PPU thread forever (deadlock). */
+-                    spu_workload_dispatch_async(host_elf, (uint32_t)sz,
+-                                                (uint32_t)(uintptr_t)context);
++                     * inline would block this PPU thread forever (deadlock).
++                     * Pass THIS task's taskset+slot: the globals above are
++                     * shared with every other PPU thread creating tasks. */
++                    spu_workload_dispatch_task_async(host_elf, (uint32_t)sz,
++                                                     (uint32_t)(uintptr_t)context,
++                                                     taskset_ea, i);
+             }
++            TASK_UNLOCK();
+             return CELL_OK;
+         }
+     }
++    TASK_UNLOCK();
+ 
++    fprintf(stderr, "[cellSpurs] CreateTask NOMEM: all %d task slots in use\n",
++            CELL_SPURS_MAX_TASK);
+     return CELL_SPURS_TASK_ERROR_NOMEM;
+ }
+ 
+@@ -1069,19 +1110,19 @@ s32 cellSpursJoinTask(CellSpursTaskset* taskset, CellSpursTaskId taskId,
+ 
+     printf("[cellSpurs] JoinTask(id=%u)\n", taskId);
+ 
+-    /* Find the task and mark as completed */
+-    for (u32 i = 0; i < CELL_SPURS_MAX_TASK; i++) {
+-        if (s_tasks[i].in_use && s_tasks[i].id == taskId) {
+-            s_tasks[i].completed = 1;
+-            s_tasks[i].active = 0;
+-            if (exitCode_h)
+-                *exitCode_h = s_tasks[i].exitCode;
+-            s_tasks[i].in_use = 0;
+-            return CELL_OK;
+-        }
+-    }
+-
+-    return CELL_SPURS_TASK_ERROR_SRCH;
++    /* The id the guest holds is the SLOT index (see cellSpursCreateTask), not
++     * the global counter -- once slots are reused the two differ. A task whose
++     * program already returned was released by cellSpurs_task_exited and still
++     * reports its exit code here. */
++    if (taskId >= CELL_SPURS_MAX_TASK) return CELL_SPURS_TASK_ERROR_SRCH;
++    TASK_LOCK();
++    s_tasks[taskId].completed = 1;
++    s_tasks[taskId].active = 0;
++    if (exitCode_h)
++        *exitCode_h = (s32)__builtin_bswap32((u32)s_tasks[taskId].exitCode);
++    s_tasks[taskId].in_use = 0;
++    TASK_UNLOCK();
++    return CELL_OK;
+ }
+ 
+ s32 cellSpursSendSignal(CellSpursTaskset* taskset, CellSpursTaskId taskId)
+diff --git a/libs/video/rsx_d3d12_backend.c b/libs/video/rsx_d3d12_backend.c
+index 87d76d2..1d48dc0 100644
+--- a/libs/video/rsx_d3d12_backend.c
++++ b/libs/video/rsx_d3d12_backend.c
+@@ -2002,8 +2002,14 @@ static ID3D12PipelineState* vp_get_fp_pso(int vs_idx, u32 fp_addr, u32 blend, in
+     }
+ 
+     s_perf_pso_calls++;
++    /* Key on the CODE hash, not the address. PSASBR copies each fragment program
++     * into a ring buffer with its constants patched and points every draw at a
++     * fresh copy, so an address key missed on every draw: ~4 D3DCompile + PSO
++     * creations per frame, 99% of frame time after the main menu (1 fps).
++     * The constants come from the draw's own ucode each draw (fp_k[] in b1),
++     * so one pipeline serves every copy of the same code. */
+     for (int i = 0; i < s_d3d.vp_fp_n; i++)
+-        if (s_d3d.vp_fp[i].fp_addr != fp_addr) continue;   /* cheap reject first */
++        if (s_d3d.vp_fp[i].ucode_hash != uhash) continue;   /* cheap reject first */
+         else if (s_d3d.vp_fp[i].vs_idx == vs_idx &&
+             s_d3d.vp_fp[i].vs_hash == vs_hash && s_d3d.vp_fp[i].gen == s_d3d.vp_gen &&
+             s_d3d.vp_fp[i].blend == blend && s_d3d.vp_fp[i].nrt == nrt &&
+diff --git a/runtime/spu/spu_lifted_job.h b/runtime/spu/spu_lifted_job.h
+index 028890d..2937f27 100644
+--- a/runtime/spu/spu_lifted_job.h
++++ b/runtime/spu/spu_lifted_job.h
+@@ -224,6 +224,11 @@ static inline int32_t spu_run_lifted_job_abi(spu_lifted_entry_fn entry,
+             ctx.gpr[3]._u32[1] = _LB(0x2784);
+             ctx.gpr[3]._u32[2] = _LB(0x2788);
+             ctx.gpr[3]._u32[3] = _LB(0x278C);
++            { static int _ta = -1; if (_ta < 0) _ta = getenv("SPU_TASKARG") ? 1 : 0;
++              if (_ta) fprintf(stderr, "[taskarg] img=%d r3={%08X %08X %08X %08X} r4={%08X %08X %08X %08X}\n",
++                               image_id, ctx.gpr[3]._u32[0], ctx.gpr[3]._u32[1], ctx.gpr[3]._u32[2],
++                               ctx.gpr[3]._u32[3], ctx.gpr[4]._u32[0], ctx.gpr[4]._u32[1],
++                               ctx.gpr[4]._u32[2], ctx.gpr[4]._u32[3]); }
+         } else {
+             ctx.gpr[3]._u32[0] = 0x00400000u;   /* 0x40 marker (>>16==64), DMA tag 0 */
+             ctx.gpr[3]._u32[1] = args_ea;       /* eaContext -> r3.word1 */
+@@ -314,6 +319,9 @@ static inline int32_t spu_run_lifted_job_abi(spu_lifted_entry_fn entry,
+         spu_thread_publish_ctx(opts->spu_id, 0);   /* run over: ctx is a stack local */
+     }
+     if (local_store) memcpy(local_store, ctx.ls, SPU_LS_SIZE);  /* LS back out */
++    /* ctx is a stack local: drop it from the lock-line registry before the frame
++     * dies, or the next guest store to a reserved line writes into it. */
++    { extern void spu_coh_forget(spu_context* c); spu_coh_forget(&ctx); }
+     return 0;
+ }
+ 
+diff --git a/runtime/spu/spu_workload.c b/runtime/spu/spu_workload.c
+index 04256d6..d83e1a8 100644
+--- a/runtime/spu/spu_workload.c
++++ b/runtime/spu/spu_workload.c
+@@ -251,6 +251,8 @@ typedef struct {
+     int                 have_r3;
+     uint32_t            taskset_ea;   /* captured race-free at dispatch (globals get clobbered) */
+     uint32_t            taskid;
++    int                 owns_task;    /* cellSpursCreateTask slot: free it on exit */
++    unsigned long long  t_dispatch;   /* ps3_ms_now() at dispatch (SPU_TASKTIME) */
+ } spu_async_job;
+ 
+ /* ---- Persistent per-taskset local store (LBP_PERSIST_LS) ------------------
+@@ -636,6 +638,8 @@ static void spu_async_run(spu_async_job* j)
+                 #undef RDBE32
+             }
+             spu_serial_acquire();       /* one SPU task runs at a time (LBP_SPU_SERIAL) */
++            extern unsigned long long ps3_ms_now(void);
++            unsigned long long t_run = ps3_ms_now();
+             int32_t rc = spu_run_lifted_job_abi(j->fn, ls, j->args_ea, j->image_id,
+                                                 1, j->have_r3 ? j->r3 : 0, 0);
+             /* YDKJ_CRI_RESUME: a real SPURS task is PERSISTENT -- on yield (num=0)
+@@ -690,6 +694,19 @@ static void spu_async_run(spu_async_job* j)
+                       fprintf(stderr, "[spu_workload] wrote local store -> %s\n", path); } } }
+             fprintf(stderr, "[spu_workload] async image=%d RETURNED rc=%d "
+                     "(job ran to completion, did not loop)\n", j->image_id, rc);
++            /* SPU_TASKTIME=1: where a task's wall time goes -- queued (thread
++             * start + context build) vs. running the lifted program. */
++            { static int s_tt = -1; if (s_tt < 0) s_tt = getenv("SPU_TASKTIME") ? 1 : 0;
++              if (s_tt) { unsigned long long now = ps3_ms_now();
++                  fprintf(stderr, "[tasktime] img=%d task=%u queued=%llums run=%llums\n",
++                          j->image_id, j->taskid, t_run - j->t_dispatch, now - t_run); } }
++            /* The task exited: give its id back. Real SPURS frees the slot on
++             * exit; never freeing it capped the game at 128 task launches, and
++             * the 129th CreateTask failed with NOMEM (the PSASBR menu hang). */
++            if (j->owns_task) {
++                extern void cellSpurs_task_exited(uint32_t taskset_ea, uint32_t taskid, int32_t rc);
++                cellSpurs_task_exited(j->taskset_ea, j->taskid, rc);
++            }
+             spu_serial_release();
+         }
+         /* Persistent LS is retained in its taskset slot for the next task; a
+@@ -1025,8 +1042,34 @@ int spu_taskset_wait_signal(uint32_t taskset_ea, uint32_t taskId)
+     return 0;
+ }
+ 
++static int dispatch_async_impl(const uint8_t* image, uint32_t image_size,
++                               uint32_t args_ea, int owns_task,
++                               uint32_t taskset_ea, uint32_t taskid);
++
+ int spu_workload_dispatch_async(const uint8_t* image, uint32_t image_size,
+                                 uint32_t args_ea)
++{
++    /* Legacy callers: the taskset+taskid come from the single-slot globals the
++     * last cellSpursCreateTask set. */
++    extern uint32_t g_ydkj_real_taskset_ea, g_ydkj_real_taskid;
++    return dispatch_async_impl(image, image_size, args_ea, 0,
++                               g_ydkj_real_taskset_ea, g_ydkj_real_taskid);
++}
++
++/* cellSpursCreateTask path: the taskset+taskid are passed explicitly. Reading
++ * the globals raced a second PPU thread's CreateTask -- PSASBR's menu creates
++ * tasks from two threads at once, and task 5 ran task 6's descriptor while 5's
++ * own work was never done (its caller then spun forever on the result word). */
++int spu_workload_dispatch_task_async(const uint8_t* image, uint32_t image_size,
++                                     uint32_t args_ea, uint32_t taskset_ea,
++                                     uint32_t taskid)
++{
++    return dispatch_async_impl(image, image_size, args_ea, 1, taskset_ea, taskid);
++}
++
++static int dispatch_async_impl(const uint8_t* image, uint32_t image_size,
++                               uint32_t args_ea, int owns_task,
++                               uint32_t taskset_ea, uint32_t taskid)
+ {
+     if (!image || image_size == 0) return 0;
+ 
+@@ -1049,8 +1092,8 @@ int spu_workload_dispatch_async(const uint8_t* image, uint32_t image_size,
+      * set the globals for THIS task). Reading them later in the async thread races
+      * the next CreateTask overwriting the single-slot globals -- with two audio
+      * tasks that made both run task 1's descriptor. */
+-    { extern uint32_t g_ydkj_real_taskset_ea, g_ydkj_real_taskid;
+-      j->taskset_ea = g_ydkj_real_taskset_ea; j->taskid = g_ydkj_real_taskid; }
++    j->taskset_ea = taskset_ea; j->taskid = taskid; j->owns_task = owns_task;
++    { extern unsigned long long ps3_ms_now(void); j->t_dispatch = ps3_ms_now(); }
+     /* Capture the SPURS task r3 NOW (PPU thread, synchronous) from the game's
+      * descriptor at eaContext+0x10 = {0x40-marker handle, workload EAs}; the
+      * async SPU thread reading it later would race the PPU stack. word1 is
+diff --git a/runtime/spu/spu_workload.h b/runtime/spu/spu_workload.h
+index b0b913c..d1a6551 100644
+--- a/runtime/spu/spu_workload.h
++++ b/runtime/spu/spu_workload.h
+@@ -125,6 +125,13 @@ int spu_workload_dispatch(const uint8_t* image, uint32_t image_size,
+ int spu_workload_dispatch_async(const uint8_t* image, uint32_t image_size,
+                                 uint32_t args_ea);
+ 
++/* Same, for a cellSpursCreateTask task: the taskset+taskid are given explicitly
++ * (not read from the shared globals) and the task slot is released through
++ * cellSpurs_task_exited() when the task's program returns. */
++int spu_workload_dispatch_task_async(const uint8_t* image, uint32_t image_size,
++                                     uint32_t args_ea, uint32_t taskset_ea,
++                                     uint32_t taskid);
++
+ /* Number of currently registered lifted SPU binaries (diagnostics/tests). */
+ unsigned spu_workload_count(void);
+ 
+diff --git a/runtime/syscalls/sys_ppu_thread.c b/runtime/syscalls/sys_ppu_thread.c
+index 330efb0..b107db5 100644
+--- a/runtime/syscalls/sys_ppu_thread.c
++++ b/runtime/syscalls/sys_ppu_thread.c
+@@ -1312,8 +1312,10 @@ static uint32_t dbg_rd32(uint32_t a) {
+ static void dump_one(FILE* f, int tid, const char* name, const ppu_context* c)
+ {
+     uint32_t sp = (uint32_t)c->gpr[1];
+-    fprintf(f, "[GSTACK] tid=%-2d %-24s cia=0x%08X lr=0x%08X sp=0x%08X r3=0x%08X\n",
+-            tid, name, (uint32_t)c->cia, (uint32_t)c->lr, sp, (uint32_t)c->gpr[3]);
++    fprintf(f, "[GSTACK] tid=%-2d %-24s cia=0x%08X lr=0x%08X sp=0x%08X r3=0x%08X "
++               "r28-31=%08X %08X %08X %08X\n",
++            tid, name, (uint32_t)c->cia, (uint32_t)c->lr, sp, (uint32_t)c->gpr[3],
++            (uint32_t)c->gpr[28], (uint32_t)c->gpr[29], (uint32_t)c->gpr[30], (uint32_t)c->gpr[31]);
+     fprintf(f, "[GSTACK]        chain:");
+     for (int depth = 0; depth < 24 && sp && sp < 0xF0000000u; depth++) {
+         uint32_t back = dbg_rd32(sp + 4);          /* low word of the be64 back-chain */
+-- 
+2.55.0.windows.3
+

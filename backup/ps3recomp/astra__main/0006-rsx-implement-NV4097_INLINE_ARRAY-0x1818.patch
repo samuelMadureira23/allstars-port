@@ -1,0 +1,163 @@
+From 7d7b0f877bea1c92a1e7a9c885ef1c13e2d9c655 Mon Sep 17 00:00:00 2001
+From: samuel <samuelMadureira23@users.noreply.github.com>
+Date: Wed, 14 Oct 2026 09:55:18 -0300
+Subject: [PATCH 6/8] rsx: implement NV4097_INLINE_ARRAY (0x1818)
+
+Vertex data streamed in the FIFO between SET_BEGIN_END(prim) and (0) was
+dropped (no handler), so every immediate-mode draw vanished -- PSASBR draws
+its 2D/UI this way and its frontend presented black frames. Stage the dwords
+as an interleaved array in a private scratch window above RSX local memory,
+point the enabled attributes at it for one draw_arrays, restore. The FIFO
+walker keeps method 0x1818 for every dword of the block.
+
+First visible frame of PSASBR: the legal/copyright screen.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ libs/video/cellGcmSys.c   |  4 +-
+ libs/video/rsx_commands.c | 90 +++++++++++++++++++++++++++++++++++++++
+ libs/video/rsx_commands.h |  3 ++
+ 3 files changed, 96 insertions(+), 1 deletion(-)
+
+diff --git a/libs/video/cellGcmSys.c b/libs/video/cellGcmSys.c
+index 6ed2032..d571571 100644
+--- a/libs/video/cellGcmSys.c
++++ b/libs/video/cellGcmSys.c
+@@ -1579,7 +1579,9 @@ static void gcm_rsx_process_fifo_unlocked(void)
+             for (u32 i = 0; i < count; i++) {
+                 u32 dea = gcm_io2ea(s_fifo_getoff + 4 + i * 4);
+                 if (!dea) break;
+-                u32 m = (type == 0) ? method + i * 4 : method;
++                /* INLINE_ARRAY is a data port: every dword of the block is vertex
++                 * data for 0x1818, whatever the header increment mode says. */
++                u32 m = (type == 0 && !(subch == 0 && method == 0x1818u)) ? method + i * 4 : method;
+                 /* GCM_SET_USER_COMMAND is method 0xEB00, which this decode
+                  * splits into subchannel 7 / method 0x0B00 -- so it was landing
+                  * in the 2D engine path and being dropped as unrecognised. It
+diff --git a/libs/video/rsx_commands.c b/libs/video/rsx_commands.c
+index 601134b..00bac2f 100644
+--- a/libs/video/rsx_commands.c
++++ b/libs/video/rsx_commands.c
+@@ -332,8 +332,97 @@ static int process_vertex_attrib_method(rsx_state* state, u32 method, u32 data)
+  * Main method dispatch
+  * -----------------------------------------------------------------------*/
+ 
++/* ---------------------------------------------------------------------------
++ * NV4097_INLINE_ARRAY (0x1818): vertex data carried in the FIFO itself.
++ *
++ * Between SET_BEGIN_END(prim) and SET_BEGIN_END(0) a title may stream its
++ * vertices as INLINE_ARRAY dwords instead of pointing at vertex arrays: each
++ * vertex is the enabled attributes in index order, packed back to back. PSASBR
++ * draws its 2D/UI and most of its frontend this way (millions of dwords per
++ * minute); with no handler every one of those draws vanished and the frontend
++ * presented black frames.
++ *
++ * Rather than teach every backend a second vertex path, stage the dwords as an
++ * ordinary interleaved array in a private scratch window (above RSX local
++ * memory, so it can never alias the title's VRAM), point the enabled
++ * attributes at it for one draw_arrays, then restore them.
++ * -----------------------------------------------------------------------*/
++#define RSX_INLINE_SCRATCH_LOCAL_OFF 0x2C000000u        /* -> EA 0xEC000000 */
++#define RSX_INLINE_MAX_DWORDS        (4u * 1024u * 1024u)
++static u32* s_inl = NULL;
++static u32  s_inl_n = 0;
++
++void rsx_inline_array_push(rsx_state* state, u32 data)
++{
++    (void)state;
++    if (!s_inl) s_inl = (u32*)malloc(RSX_INLINE_MAX_DWORDS * sizeof(u32));
++    if (s_inl && s_inl_n < RSX_INLINE_MAX_DWORDS) s_inl[s_inl_n++] = data;
++}
++
++static u32 rsx_vertex_type_bytes(u32 type, u32 size)
++{
++    switch (type) {
++    case 1: case 5: return 2 * size;                 /* S1 (snorm16), S32K (s16) */
++    case 2: return 4 * size;                         /* F (float32) */
++    case 3: return 2 * size;                         /* SF (half) */
++    case 4: case 7: return size;                     /* UB, UB256 */
++    case 6: return 4;                                /* CMP (11:11:10 packed) */
++    default: return 4 * size;
++    }
++}
++
++void rsx_inline_array_flush(rsx_state* state)
++{
++    if (!s_inl_n) return;
++    const u32 n_dw = s_inl_n;
++    s_inl_n = 0;
++    if (!s_backend || !s_backend->draw_arrays) return;
++
++    /* Per-vertex layout: enabled attributes in index order, each rounded up to
++     * a dword (the FIFO only carries whole dwords). */
++    u32 attr_off[RSX_MAX_VERTEX_ATTRIBS], vsize = 0;
++    for (u32 i = 0; i < RSX_MAX_VERTEX_ATTRIBS; i++) {
++        const rsx_vertex_attrib* a = &state->vertex_attribs[i];
++        attr_off[i] = vsize;
++        if (a->enabled) vsize += (rsx_vertex_type_bytes(a->type, a->size) + 3u) & ~3u;
++    }
++    if (!vsize) return;
++    const u32 bytes = n_dw * 4u, nverts = bytes / vsize;
++    { static int _d = 0; if (_d++ < 12)
++        fprintf(stderr, "[RSX] INLINE_ARRAY prim=%u dwords=%u vsize=%u -> %u verts\n",
++                state->primitive_type, n_dw, vsize, nverts); }
++    if (!nverts) return;
++
++    extern uint8_t* vm_base;
++    u8* dst = vm_base + 0xC0000000u + RSX_INLINE_SCRATCH_LOCAL_OFF;
++    for (u32 i = 0; i < n_dw; i++) {           /* keep guest (big-endian) byte order */
++        u32 v = s_inl[i];
++        dst[i * 4 + 0] = (u8)(v >> 24); dst[i * 4 + 1] = (u8)(v >> 16);
++        dst[i * 4 + 2] = (u8)(v >> 8);  dst[i * 4 + 3] = (u8)v;
++    }
++
++    rsx_vertex_attrib saved[RSX_MAX_VERTEX_ATTRIBS];
++    memcpy(saved, state->vertex_attribs, sizeof saved);
++    for (u32 i = 0; i < RSX_MAX_VERTEX_ATTRIBS; i++) {
++        rsx_vertex_attrib* a = &state->vertex_attribs[i];
++        if (!a->enabled) continue;
++        a->offset = RSX_INLINE_SCRATCH_LOCAL_OFF + attr_off[i];   /* bit31 clear: local */
++        a->stride = vsize;
++        a->frequency = 0;
++    }
++    if (s_backend->set_vertex_attribs) s_backend->set_vertex_attribs(s_backend->userdata, state);
++    s_backend->draw_arrays(s_backend->userdata, state->primitive_type, 0, nverts);
++    memcpy(state->vertex_attribs, saved, sizeof saved);
++    state->vertex_dirty = 1;
++    if (s_backend->set_vertex_attribs) s_backend->set_vertex_attribs(s_backend->userdata, state);
++}
++
+ int rsx_process_method(rsx_state* state, u32 method, u32 data)
+ {
++    if (method == 0x1818u) {                     /* NV4097_INLINE_ARRAY */
++        rsx_inline_array_push(state, data);
++        return 0;
++    }
+     /* RSX_TRACE=<N>: trace the first N methods (bare "1" keeps the old 250).
+      * The fixed 250 was spent entirely on boot-time setup, so the methods around
+      * the first real draw -- exactly the ones worth seeing -- were never traced. */
+@@ -724,6 +813,7 @@ int rsx_process_method(rsx_state* state, u32 method, u32 data)
+                 state->texture_dirty = 0;
+             }
+         } else {
++            rsx_inline_array_flush(state);
+             state->in_begin_end = 0;
+         }
+         return 0;
+diff --git a/libs/video/rsx_commands.h b/libs/video/rsx_commands.h
+index bd655fe..154f36e 100644
+--- a/libs/video/rsx_commands.h
++++ b/libs/video/rsx_commands.h
+@@ -382,6 +382,9 @@ void rsx_state_init(rsx_state* state);
+  * data:   32-bit value to write
+  * Returns 0 on success, -1 if method is unrecognized. */
+ int rsx_process_method(rsx_state* state, u32 method, u32 data);
++/* NV4097_INLINE_ARRAY staging (rsx_commands.c): push one dword; flush draws it. */
++void rsx_inline_array_push(rsx_state* state, u32 data);
++void rsx_inline_array_flush(rsx_state* state);
+ 
+ /* Process a command buffer segment.
+  * buf:  pointer to command buffer data (host memory)
+-- 
+2.55.0.windows.3
+
